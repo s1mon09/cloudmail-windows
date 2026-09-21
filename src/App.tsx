@@ -60,7 +60,7 @@ function App() {
       const client = new CloudflareClient(apiBase);
       const settings = await client.credentialLogin(credential);
       await invoke("save_secret", { account: "cloudflare-credential", secret: credential });
-      const result = await client.listMails(1, 20);
+      const result = await client.listParsedMails(1, 20);
       setRemoteMails(result.results.map((mail) => ({ ...normalizeCloudflareMail(mail), tag: "实时", color: "#f38020" })) as Mail[]);
       setApiStatus(`已连接 · ${settings.address || "Cloudflare 邮箱"}`);
       setShowSettings(false);

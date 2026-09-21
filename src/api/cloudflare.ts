@@ -2,12 +2,14 @@ export type CloudflareMail = {
   id: number | string;
   source?: string;
   subject?: string;
+  sender?: string;
   message?: string;
   text?: string;
   date?: string;
   is_unread?: number;
   originalSource?: string;
   attachment?: unknown[];
+  attachments?: Array<{ filename?: string; mimeType?: string; disposition?: string; size?: number; [key: string]: unknown }>;
   [key: string]: unknown;
 };
 
@@ -29,6 +31,13 @@ export type CloudflareOpenSettings = {
 };
 
 export type MailPage = { results: CloudflareMail[]; count: number };
+
+export type ParsedMail = CloudflareMail & {
+  sender?: string;
+  text?: string;
+  html?: string;
+  attachments?: Array<{ filename?: string; mimeType?: string; disposition?: string; size?: number; [key: string]: unknown }>;
+};
 
 export class CloudflareApiError extends Error {
   constructor(public status: number, message: string, public payload?: unknown) {
@@ -89,11 +98,18 @@ export class CloudflareClient {
   getSettings() { return this.request<CloudflareSettings>("/api/settings"); }
 
   listMails(page = 1, pageSize = 20) {
-    const offset = Math.max(0, page - 1);
+    const offset = Math.max(0, (page - 1) * pageSize);
     return this.request<MailPage>(`/api/mails?limit=${pageSize}&offset=${offset}`);
   }
 
-  getMail(id: number | string) { return this.request<CloudflareMail>(`/api/mails/${encodeURIComponent(String(id))}`); }
+  getMail(id: number | string) { return this.request<CloudflareMail>(`/api/mail/${encodeURIComponent(String(id))}`); }
+
+  listParsedMails(page = 1, pageSize = 20) {
+    const offset = Math.max(0, (page - 1) * pageSize);
+    return this.request<{ results: ParsedMail[]; count: number }>(`/api/parsed_mails?limit=${pageSize}&offset=${offset}`);
+  }
+
+  getParsedMail(id: number | string) { return this.request<ParsedMail>(`/api/parsed_mail/${encodeURIComponent(String(id))}`); }
 
   markRead(id: number | string, isUnread: boolean) {
     return this.request(`/api/mails/${encodeURIComponent(String(id))}/read`, { method: "PATCH", body: JSON.stringify({ isUnread }) });
@@ -103,8 +119,12 @@ export class CloudflareClient {
     return this.request(`/api/mails/${encodeURIComponent(String(id))}`, { method: "DELETE" });
   }
 
-  sendMail(input: { to_mail: string; subject: string; content: string; content_type?: string }) {
-    return this.request("/api/send", { method: "POST", body: JSON.stringify(input) });
+  clearInbox() { return this.request("/api/clear_inbox", { method: "DELETE" }); }
+
+  deleteAddress() { return this.request("/api/delete_address", { method: "DELETE" }); }
+
+  sendMail(input: { to_mail: string; subject: string; content: string; from_name?: string; to_name?: string; is_html?: boolean }) {
+    return this.request("/api/send_mail", { method: "POST", body: JSON.stringify(input) });
   }
 
   createAddress(name = "", domain = "", cfToken = "") {
@@ -113,7 +133,7 @@ export class CloudflareClient {
 }
 
 export function normalizeCloudflareMail(mail: CloudflareMail) {
-  const source = mail.source || mail.originalSource || "未知发件人";
+  const source = mail.sender || mail.source || mail.originalSource || "未知发件人";
   const address = source.match(/<([^>]+)>/)?.[1] || source;
   const sender = source.replace(/<[^>]+>/, "").trim() || address;
   return {
@@ -124,5 +144,6 @@ export function normalizeCloudflareMail(mail: CloudflareMail) {
     unread: mail.is_unread === 1,
     color: "#64748b",
     raw: mail,
+    attachments: mail.attachments || mail.attachment || [],
   };
 }

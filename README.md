@@ -90,3 +90,13 @@ Cloudflare 临时邮箱适配器已根据上游前端和文档实现以下调用
 ### 当前实例地址核验
 
 通过检查 `mail.kodao.site` 当前部署的前端 bundle，确认它把 REST API 基地址配置为 `https://email.kodao.site`；`https://mail.kodao.site` 是前端页面地址，直接请求其 `/open_api/settings` 会返回 HTML。因此客户端默认使用 `https://email.kodao.site`，但设置页仍允许修改，以兼容未来迁移或自部署实例。
+
+## 基于 tempemail 源码的二次核对
+
+客户端已按本地 `cloudflare_temp_email` 源码修正：邮件详情实际使用 `/api/mail/:mail_id`，解析邮件使用 `/api/parsed_mails` 与 `/api/parsed_mail/:mail_id`，发信使用 `/api/send_mail`，而不是早期假设的 `/api/mails/:id`、`/api/send`。连接成功后，收件箱优先读取服务端解析字段 `sender`、`subject`、`text`、`html` 和 `attachments`，本地验证码解析只作为兜底。
+
+另外补齐客户端 API 方法：清空收件箱、删除邮箱地址、发件箱操作和分页 offset。上游的 S3 附件签名接口、自动回复和 Webhook 已记录在 `docs-research.md`，后续可根据部署实例是否启用对应功能再接入，避免对未开启的 Worker 功能产生错误请求。
+
+## GitHub 项目复用判断
+
+`qsl`（Apache-2.0）适合参考 Rust 邮箱核心、IMAP IDLE、SQLite FTS、HTML 清洗和 OS keychain；`tutabridge`（GPL-3.0）适合参考同步器、离线加密缓存和本地 IMAP/SMTP bridge，但不能直接复制 GPL 代码到本项目；`2fhey`（CC0-1.0）适合参考多语言验证码规则。详细核对记录见 `docs-research.md`。
