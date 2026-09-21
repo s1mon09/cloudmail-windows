@@ -35,7 +35,7 @@ function App() {
   const [copied, setCopied] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showCompose, setShowCompose] = useState(false);
-  const [apiBase, setApiBase] = useState("https://mail.kodao.site");
+  const [apiBase, setApiBase] = useState("https://email.kodao.site");
   const [credential, setCredential] = useState("");
   const [apiStatus, setApiStatus] = useState("演示数据");
   const [remoteMails, setRemoteMails] = useState<Mail[] | null>(null);

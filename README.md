@@ -86,3 +86,7 @@ Cloudflare 临时邮箱适配器已根据上游前端和文档实现以下调用
 ## GitHub 发布
 
 项目包含 `.github/workflows/release.yml`。推送 `v*` 标签或手动运行工作流后，GitHub Actions 会在 Windows runner 上生成原生安装包，并创建草稿 Release。正式发布前应补充 Windows 代码签名证书，避免 SmartScreen 警告。
+
+### 当前实例地址核验
+
+通过检查 `mail.kodao.site` 当前部署的前端 bundle，确认它把 REST API 基地址配置为 `https://email.kodao.site`；`https://mail.kodao.site` 是前端页面地址，直接请求其 `/open_api/settings` 会返回 HTML。因此客户端默认使用 `https://email.kodao.site`，但设置页仍允许修改，以兼容未来迁移或自部署实例。
