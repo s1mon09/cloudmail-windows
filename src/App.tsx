@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { CloudflareClient, normalizeCloudflareMail, type ParsedMail } from "./api/cloudflare";
 import { findOtpCandidates } from "./api/otp";
@@ -36,6 +36,7 @@ function App() {
   const [selected, setSelected] = useState(1);
   const [folder, setFolder] = useState("收件箱");
   const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<"all" | "unread" | "attachments" | "otp">("all");
   const [copied, setCopied] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showCompose, setShowCompose] = useState(false);
@@ -49,18 +50,34 @@ function App() {
   const [composeTo, setComposeTo] = useState("");
   const [composeSubject, setComposeSubject] = useState("");
   const [composeBody, setComposeBody] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   const sourceMails = remoteMails ?? mails;
   const activeMail = sourceMails.find((mail) => mail.id === selected) ?? sourceMails[0];
   const visibleMails = useMemo(() => sourceMails.filter((mail) => {
     const text = `${mail.sender} ${mail.address} ${mail.subject} ${mail.preview}`.toLowerCase();
-    return text.includes(query.toLowerCase());
-  }), [query, sourceMails]);
+    const matchesFilter = filter === "all"
+      || (filter === "unread" && mail.unread)
+      || (filter === "attachments" && Boolean(mail.attachments?.length))
+      || (filter === "otp" && Boolean(mail.otp));
+    return matchesFilter && text.includes(query.toLowerCase());
+  }), [query, filter, sourceMails]);
 
   useEffect(() => {
     invoke<string | null>("get_secret", { account: "cloudflare-credential" }).then((saved) => {
       if (saved) setCredential(saved);
     }).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        window.setTimeout(() => searchInputRef.current?.focus(), 0);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
   const connectCloudflare = async () => {
@@ -148,8 +165,8 @@ function App() {
         </aside>
         <main className="mail-list-panel">
           <div className="panel-heading"><div><p className="eyebrow">{folder}</p><h1>收件箱 <span>{sourceMails.length}</span></h1></div><button className="refresh-button" onClick={refreshInbox} disabled={loading}>{loading ? "…" : "↻"}</button></div>
-          <div className="search-box"><span>⌕</span><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索邮件、发件人或验证码" /><kbd>Ctrl K</kbd></div>
-          <div className="filter-row"><button className="filter active">全部</button><button className="filter">未读</button><button className="filter">带附件</button><button className="filter otp-filter">验证码 <span>3</span></button></div>
+          <div className="search-box"><span>⌕</span><input ref={searchInputRef} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索邮件、发件人或验证码" /><kbd>Ctrl K</kbd></div>
+          <div className="filter-row"><button className={`filter ${filter === "all" ? "active" : ""}`} onClick={() => setFilter("all")}>全部</button><button className={`filter ${filter === "unread" ? "active" : ""}`} onClick={() => setFilter("unread")}>未读</button><button className={`filter ${filter === "attachments" ? "active" : ""}`} onClick={() => setFilter("attachments")}>带附件</button><button className={`filter otp-filter ${filter === "otp" ? "active" : ""}`} onClick={() => setFilter("otp")}>验证码 <span>{sourceMails.filter((mail) => mail.otp).length}</span></button></div>
           <div className="mail-list">{visibleMails.map((mail) => <button key={mail.id} onClick={() => openMail(mail)} className={`mail-row ${selected === mail.id ? "selected" : ""}`}><div className="sender-avatar" style={{ background: mail.color }}>{mail.sender.slice(0, 1)}</div><div className="mail-copy"><div className="mail-meta"><strong>{mail.sender}</strong><time>{mail.time}</time></div><div className="subject">{mail.subject} {mail.tag && <span className="tag">{mail.tag}</span>}</div><p>{mail.preview}</p></div>{mail.unread && <i className="unread-dot" />}</button>)}</div>
         </main>
         <section className="reading-panel">

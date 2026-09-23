@@ -108,6 +108,10 @@ Cloudflare 临时邮箱适配器已根据上游前端和文档实现以下调用
 
 前端验证命令为 `pnpm build`。Windows 原生 Rust 检查应在安装 Rust、Windows SDK 和 WebView2 的 Windows runner 上执行；GitHub Actions 工作流会在 Windows 环境中完成打包验证。
 
+## 第二轮体验优化
+
+收件箱现在支持全部、未读、带附件和验证码四种筛选，并支持 `Ctrl+K` 快速聚焦搜索框。API 请求使用 20 秒超时控制，能识别 Worker 返回的 `message` 或 `error` 字段；邮件正文在 React 中以文本方式展示，不直接注入远程 HTML，降低恶意邮件脚本执行风险。
+
 ## GitHub 项目复用判断
 
 `qsl`（Apache-2.0）适合参考 Rust 邮箱核心、IMAP IDLE、SQLite FTS、HTML 清洗和 OS keychain；`tutabridge`（GPL-3.0）适合参考同步器、离线加密缓存和本地 IMAP/SMTP bridge，但不能直接复制 GPL 代码到本项目；`2fhey`（CC0-1.0）适合参考多语言验证码规则。详细核对记录见 `docs-research.md`。

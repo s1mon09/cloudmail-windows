@@ -71,11 +71,25 @@ export class CloudflareClient {
     headers.set("x-lang", "zh-CN");
     headers.set("x-fingerprint", fingerprint());
     if (options.auth !== false && this.token) headers.set("Authorization", `Bearer ${this.token}`);
-    const response = await fetch(`${this.baseUrl}${path}`, { ...init, headers });
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 20000);
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}${path}`, { ...init, headers, signal: controller.signal });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        throw new CloudflareApiError(408, "请求超时，请检查网络或 API 地址");
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timeout);
+    }
     const contentType = response.headers.get("content-type") || "";
     const payload = contentType.includes("application/json") ? await response.json() : await response.text();
     if (!response.ok) {
-      const message = typeof payload === "object" && payload && "message" in payload ? String(payload.message) : String(payload || response.statusText);
+      const message = typeof payload === "object" && payload
+        ? String((payload as Record<string, unknown>).message || (payload as Record<string, unknown>).error || response.statusText)
+        : String(payload || response.statusText);
       throw new CloudflareApiError(response.status, message, payload);
     }
     return payload as T;
