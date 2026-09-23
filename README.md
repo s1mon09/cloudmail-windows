@@ -97,6 +97,17 @@ Cloudflare 临时邮箱适配器已根据上游前端和文档实现以下调用
 
 另外补齐客户端 API 方法：清空收件箱、删除邮箱地址、发件箱操作和分页 offset。上游的 S3 附件签名接口、自动回复和 Webhook 已记录在 `docs-research.md`，后续可根据部署实例是否启用对应功能再接入，避免对未开启的 Worker 功能产生错误请求。
 
+## Windows 客户端当前可用功能
+
+- 连接 `https://email.kodao.site` 并保存凭据到 Windows Credential Manager。
+- 使用上游 `/api/parsed_mails` 加载服务端解析后的收件箱列表。
+- 点击邮件按需加载 `/api/parsed_mail/:id`，减少首次打开的网络请求和正文传输。
+- 刷新收件箱、自动标记已读、删除当前邮件。
+- 优先使用服务端解析字段，客户端本地识别验证码并提供复制。
+- 通过 `/api/send_mail` 发送纯文本邮件。
+
+前端验证命令为 `pnpm build`。Windows 原生 Rust 检查应在安装 Rust、Windows SDK 和 WebView2 的 Windows runner 上执行；GitHub Actions 工作流会在 Windows 环境中完成打包验证。
+
 ## GitHub 项目复用判断
 
 `qsl`（Apache-2.0）适合参考 Rust 邮箱核心、IMAP IDLE、SQLite FTS、HTML 清洗和 OS keychain；`tutabridge`（GPL-3.0）适合参考同步器、离线加密缓存和本地 IMAP/SMTP bridge，但不能直接复制 GPL 代码到本项目；`2fhey`（CC0-1.0）适合参考多语言验证码规则。详细核对记录见 `docs-research.md`。

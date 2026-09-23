@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { CloudflareClient, normalizeCloudflareMail } from "./api/cloudflare";
+import { CloudflareClient, normalizeCloudflareMail, type ParsedMail } from "./api/cloudflare";
+import { findOtpCandidates } from "./api/otp";
 import "./App.css";
 
 type Mail = {
@@ -14,6 +15,9 @@ type Mail = {
   otp?: string;
   tag?: string;
   color: string;
+  body?: string;
+  html?: string;
+  attachments?: unknown[];
 };
 
 const mails: Mail[] = [
@@ -39,6 +43,12 @@ function App() {
   const [credential, setCredential] = useState("");
   const [apiStatus, setApiStatus] = useState("演示数据");
   const [remoteMails, setRemoteMails] = useState<Mail[] | null>(null);
+  const [client, setClient] = useState<CloudflareClient | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [actionStatus, setActionStatus] = useState("");
+  const [composeTo, setComposeTo] = useState("");
+  const [composeSubject, setComposeSubject] = useState("");
+  const [composeBody, setComposeBody] = useState("");
 
   const sourceMails = remoteMails ?? mails;
   const activeMail = sourceMails.find((mail) => mail.id === selected) ?? sourceMails[0];
@@ -57,16 +67,62 @@ function App() {
     if (!credential.trim()) { setApiStatus("请输入邮箱凭据"); return; }
     setApiStatus("连接中…");
     try {
-      const client = new CloudflareClient(apiBase);
-      const settings = await client.credentialLogin(credential);
+      const apiClient = new CloudflareClient(apiBase);
+      const settings = await apiClient.credentialLogin(credential);
       await invoke("save_secret", { account: "cloudflare-credential", secret: credential });
-      const result = await client.listParsedMails(1, 20);
-      setRemoteMails(result.results.map((mail) => ({ ...normalizeCloudflareMail(mail), tag: "实时", color: "#f38020" })) as Mail[]);
+      const result = await apiClient.listParsedMails(1, 20);
+      setClient(apiClient);
+      setRemoteMails(result.results.map(toMail));
       setApiStatus(`已连接 · ${settings.address || "Cloudflare 邮箱"}`);
       setShowSettings(false);
     } catch (error) {
       setApiStatus(error instanceof Error ? error.message : "连接失败");
     }
+  };
+
+  const toMail = (mail: ParsedMail): Mail => {
+    const normalized = normalizeCloudflareMail(mail);
+    const body = String(mail.text || mail.html || mail.message || "");
+    const otp = findOtpCandidates(`${mail.subject || ""}\n${body}`)[0]?.value;
+    return { ...normalized, body, html: mail.html, otp, tag: otp ? "验证码" : "实时", color: "#f38020" } as Mail;
+  };
+
+  const refreshInbox = async () => {
+    if (!client) { setShowSettings(true); return; }
+    setLoading(true); setActionStatus("");
+    try {
+      const result = await client.listParsedMails(1, 20);
+      setRemoteMails(result.results.map(toMail));
+      setActionStatus(`已更新 ${result.results.length} 封邮件`);
+    } catch (error) { setActionStatus(error instanceof Error ? error.message : "刷新失败"); }
+    finally { setLoading(false); }
+  };
+
+  const openMail = async (mail: Mail) => {
+    setSelected(mail.id);
+    if (!client || mail.body) return;
+    try {
+      const detail = await client.getParsedMail(mail.id);
+      setRemoteMails((current) => current?.map((item) => item.id === mail.id ? toMail(detail) : item) ?? current);
+      if (mail.unread) await client.markRead(mail.id, false);
+    } catch (error) { setActionStatus(error instanceof Error ? error.message : "邮件加载失败"); }
+  };
+
+  const deleteActiveMail = async () => {
+    if (!client || !activeMail) return;
+    try {
+      await client.deleteMail(activeMail.id);
+      setRemoteMails((current) => current?.filter((item) => item.id !== activeMail.id) ?? current);
+      setActionStatus("邮件已删除");
+    } catch (error) { setActionStatus(error instanceof Error ? error.message : "删除失败"); }
+  };
+
+  const sendCompose = async () => {
+    if (!client || !composeTo.trim() || !composeSubject.trim()) { setActionStatus("请先连接邮箱并填写收件人、主题"); return; }
+    try {
+      await client.sendMail({ to_mail: composeTo.trim(), subject: composeSubject.trim(), content: composeBody, is_html: false });
+      setShowCompose(false); setComposeTo(""); setComposeSubject(""); setComposeBody(""); setActionStatus("邮件已发送");
+    } catch (error) { setActionStatus(error instanceof Error ? error.message : "发送失败"); }
   };
 
   const copyOtp = async () => {
@@ -88,24 +144,24 @@ function App() {
           <div className="account-card"><div className="account-icon">K</div><div><strong>mail.kodao.site</strong><small>Cloudflare 临时邮箱</small></div><span className="chevron">⌄</span></div>
           <nav className="nav-list">{navItems.map(([label, icon, count]) => <button key={label} className={`nav-item ${folder === label ? "active" : ""}`} onClick={() => setFolder(label)}><span className="nav-icon">{icon}</span><span>{label}</span>{count && <b>{count}</b>}</button>)}</nav>
           <div className="sidebar-section"><div className="section-label">邮箱账户 <button onClick={() => setShowSettings(true)}>＋</button></div><button className="account-row"><span className="status-dot orange" /> 临时邮箱 <em>12</em></button><button className="account-row"><span className="status-dot red" /> 163 邮箱 <em>0</em></button></div>
-          <div className="sidebar-footer"><span className="sync-dot" /> 已同步 · 刚刚</div>
+          <div className="sidebar-footer"><span className="sync-dot" /> {actionStatus || (client ? "已连接 · 可同步" : "演示数据")}</div>
         </aside>
         <main className="mail-list-panel">
-          <div className="panel-heading"><div><p className="eyebrow">{folder}</p><h1>收件箱 <span>12</span></h1></div><button className="refresh-button">↻</button></div>
+          <div className="panel-heading"><div><p className="eyebrow">{folder}</p><h1>收件箱 <span>{sourceMails.length}</span></h1></div><button className="refresh-button" onClick={refreshInbox} disabled={loading}>{loading ? "…" : "↻"}</button></div>
           <div className="search-box"><span>⌕</span><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索邮件、发件人或验证码" /><kbd>Ctrl K</kbd></div>
           <div className="filter-row"><button className="filter active">全部</button><button className="filter">未读</button><button className="filter">带附件</button><button className="filter otp-filter">验证码 <span>3</span></button></div>
-          <div className="mail-list">{visibleMails.map((mail) => <button key={mail.id} onClick={() => setSelected(mail.id)} className={`mail-row ${selected === mail.id ? "selected" : ""}`}><div className="sender-avatar" style={{ background: mail.color }}>{mail.sender.slice(0, 1)}</div><div className="mail-copy"><div className="mail-meta"><strong>{mail.sender}</strong><time>{mail.time}</time></div><div className="subject">{mail.subject} {mail.tag && <span className="tag">{mail.tag}</span>}</div><p>{mail.preview}</p></div>{mail.unread && <i className="unread-dot" />}</button>)}</div>
+          <div className="mail-list">{visibleMails.map((mail) => <button key={mail.id} onClick={() => openMail(mail)} className={`mail-row ${selected === mail.id ? "selected" : ""}`}><div className="sender-avatar" style={{ background: mail.color }}>{mail.sender.slice(0, 1)}</div><div className="mail-copy"><div className="mail-meta"><strong>{mail.sender}</strong><time>{mail.time}</time></div><div className="subject">{mail.subject} {mail.tag && <span className="tag">{mail.tag}</span>}</div><p>{mail.preview}</p></div>{mail.unread && <i className="unread-dot" />}</button>)}</div>
         </main>
         <section className="reading-panel">
-          <div className="reading-toolbar"><div className="toolbar-left"><button>←</button><button>↗</button><button>⌫</button></div><div className="toolbar-right"><button>☆</button><button>⋯</button></div></div>
+          <div className="reading-toolbar"><div className="toolbar-left"><button>←</button><button>↗</button><button onClick={deleteActiveMail}>⌫</button></div><div className="toolbar-right"><button>☆</button><button>⋯</button></div></div>
           <article className="message"><div className="message-heading"><div className="sender-avatar large" style={{ background: activeMail.color }}>{activeMail.sender.slice(0, 1)}</div><div><h2>{activeMail.subject}</h2><div className="from-line"><strong>{activeMail.sender}</strong><span>&lt;{activeMail.address}&gt;</span><time>{activeMail.time}</time></div></div></div>
             {activeMail.otp && <div className="otp-card"><div className="otp-icon">◇</div><div className="otp-content"><small>检测到验证码</small><strong>{activeMail.otp}</strong><span>仅在此设备本地解析，不会上传邮件内容</span></div><button onClick={copyOtp}>{copied ? "已复制" : "复制"}</button></div>}
-            <div className="message-body"><p>Hi there,</p><p>We noticed a new sign-in to your account. If this was you, you can safely continue. If you don’t recognize this activity, please secure your account immediately.</p><div className="code-box"><span>Verification code</span><strong>{activeMail.otp ?? "—"}</strong></div><p className="muted">This code expires in 10 minutes. Do not share it with anyone.</p><p>Thanks,<br /><strong>{activeMail.sender} Security Team</strong></p></div>
+            <div className="message-body">{activeMail.body ? <><p>{activeMail.body}</p>{activeMail.attachments && activeMail.attachments.length > 0 && <p className="muted">附件：{activeMail.attachments.length} 个</p>}</> : <><p>Hi there,</p><p>连接邮箱后点击邮件即可加载真实正文。当前为演示内容。</p><div className="code-box"><span>Verification code</span><strong>{activeMail.otp ?? "—"}</strong></div><p className="muted">邮件正文默认按需加载，减少启动时间和网络流量。</p></>}</div>
           </article>
         </section>
       </div>
       {showSettings && <div className="modal-backdrop" onClick={() => setShowSettings(false)}><div className="modal" onClick={(e) => e.stopPropagation()}><div className="modal-header"><div><p className="eyebrow">设置</p><h2>账户与同步</h2></div><button onClick={() => setShowSettings(false)}>×</button></div><label>邮箱账户</label><div className="settings-account"><span className="status-dot orange" /><div><strong>mail.kodao.site</strong><small>{apiStatus}</small></div><span className="connected">{remoteMails ? "已连接" : "未连接"}</span></div><label>Cloudflare API 地址</label><input className="settings-input" value={apiBase} onChange={(e) => setApiBase(e.target.value)} placeholder="https://mail.kodao.site" /><label>邮箱凭据 / JWT</label><input className="settings-input" type="password" value={credential} onChange={(e) => setCredential(e.target.value)} placeholder="在此输入，不要发送到聊天" /><button className="compose-button connect-button" onClick={connectCloudflare}>连接并同步收件箱</button><div className="settings-account muted-account"><span className="status-dot red" /><div><strong>163 邮箱</strong><small>使用授权码连接 IMAP/SMTP</small></div><button className="outline-button">添加</button></div><div className="settings-note">凭据通过 Tauri 存入 Windows Credential Manager，不会写入日志或同步到云端。</div></div></div>}
-      {showCompose && <div className="modal-backdrop" onClick={() => setShowCompose(false)}><div className="modal compose" onClick={(e) => e.stopPropagation()}><div className="modal-header"><div><p className="eyebrow">新邮件</p><h2>写邮件</h2></div><button onClick={() => setShowCompose(false)}>×</button></div><input placeholder="收件人" /><input placeholder="主题" /><textarea placeholder="输入邮件内容…" rows={7} /><div className="compose-footer"><span>当前账户：mail.kodao.site</span><button className="compose-button small" onClick={() => setShowCompose(false)}>发送</button></div></div></div>}
+      {showCompose && <div className="modal-backdrop" onClick={() => setShowCompose(false)}><div className="modal compose" onClick={(e) => e.stopPropagation()}><div className="modal-header"><div><p className="eyebrow">新邮件</p><h2>写邮件</h2></div><button onClick={() => setShowCompose(false)}>×</button></div><input value={composeTo} onChange={(e) => setComposeTo(e.target.value)} placeholder="收件人" /><input value={composeSubject} onChange={(e) => setComposeSubject(e.target.value)} placeholder="主题" /><textarea value={composeBody} onChange={(e) => setComposeBody(e.target.value)} placeholder="输入邮件内容…" rows={7} /><div className="compose-footer"><span>当前账户：mail.kodao.site</span><button className="compose-button small" onClick={sendCompose}>发送</button></div></div></div>}
     </div>
   );
 }
