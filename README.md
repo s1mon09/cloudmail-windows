@@ -112,6 +112,10 @@ Cloudflare 临时邮箱适配器已根据上游前端和文档实现以下调用
 
 收件箱现在支持全部、未读、带附件和验证码四种筛选，并支持 `Ctrl+K` 快速聚焦搜索框。API 请求使用 20 秒超时控制，能识别 Worker 返回的 `message` 或 `error` 字段；邮件正文在 React 中以文本方式展示，不直接注入远程 HTML，降低恶意邮件脚本执行风险。
 
+## 轻量化优化
+
+收件箱列表默认使用轻量的 `/api/mails` 数据，只加载发件人、主题、时间和未读状态；用户打开邮件时才请求 `/api/parsed_mail/:id` 获取正文。列表按每页 20 封分页，并保留最近 30 封已打开邮件的内存缓存，避免重复请求但不产生长期磁盘缓存。搜索使用 React 延迟值，减少连续输入时的重复过滤。界面移除远程 Google Fonts，改用 Windows 系统字体，降低启动时的网络请求和内存占用。
+
 ## GitHub 项目复用判断
 
 `qsl`（Apache-2.0）适合参考 Rust 邮箱核心、IMAP IDLE、SQLite FTS、HTML 清洗和 OS keychain；`tutabridge`（GPL-3.0）适合参考同步器、离线加密缓存和本地 IMAP/SMTP bridge，但不能直接复制 GPL 代码到本项目；`2fhey`（CC0-1.0）适合参考多语言验证码规则。详细核对记录见 `docs-research.md`。

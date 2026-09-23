@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { CloudflareClient, normalizeCloudflareMail, type ParsedMail } from "./api/cloudflare";
 import { findOtpCandidates } from "./api/otp";
@@ -36,6 +36,7 @@ function App() {
   const [selected, setSelected] = useState(1);
   const [folder, setFolder] = useState("收件箱");
   const [query, setQuery] = useState("");
+  const deferredQuery = useDeferredValue(query);
   const [filter, setFilter] = useState<"all" | "unread" | "attachments" | "otp">("all");
   const [copied, setCopied] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -50,7 +51,11 @@ function App() {
   const [composeTo, setComposeTo] = useState("");
   const [composeSubject, setComposeSubject] = useState("");
   const [composeBody, setComposeBody] = useState("");
+  const [mailTotal, setMailTotal] = useState(0);
+  const [mailPage, setMailPage] = useState(1);
+  const [loadingMore, setLoadingMore] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const detailCache = useRef(new Map<number, Mail>());
 
   const sourceMails = remoteMails ?? mails;
   const activeMail = sourceMails.find((mail) => mail.id === selected) ?? sourceMails[0];
@@ -60,8 +65,8 @@ function App() {
       || (filter === "unread" && mail.unread)
       || (filter === "attachments" && Boolean(mail.attachments?.length))
       || (filter === "otp" && Boolean(mail.otp));
-    return matchesFilter && text.includes(query.toLowerCase());
-  }), [query, filter, sourceMails]);
+    return matchesFilter && text.includes(deferredQuery.toLowerCase());
+  }), [deferredQuery, filter, sourceMails]);
 
   useEffect(() => {
     invoke<string | null>("get_secret", { account: "cloudflare-credential" }).then((saved) => {
@@ -87,9 +92,11 @@ function App() {
       const apiClient = new CloudflareClient(apiBase);
       const settings = await apiClient.credentialLogin(credential);
       await invoke("save_secret", { account: "cloudflare-credential", secret: credential });
-      const result = await apiClient.listParsedMails(1, 20);
+      const result = await apiClient.listMails(1, 20);
       setClient(apiClient);
       setRemoteMails(result.results.map(toMail));
+      setMailTotal(result.count);
+      setMailPage(1);
       setApiStatus(`已连接 · ${settings.address || "Cloudflare 邮箱"}`);
       setShowSettings(false);
     } catch (error) {
@@ -108,19 +115,41 @@ function App() {
     if (!client) { setShowSettings(true); return; }
     setLoading(true); setActionStatus("");
     try {
-      const result = await client.listParsedMails(1, 20);
+      const result = await client.listMails(1, 20);
       setRemoteMails(result.results.map(toMail));
+      setMailTotal(result.count);
+      setMailPage(1);
       setActionStatus(`已更新 ${result.results.length} 封邮件`);
     } catch (error) { setActionStatus(error instanceof Error ? error.message : "刷新失败"); }
     finally { setLoading(false); }
   };
 
+  const loadMore = async () => {
+    if (!client || loadingMore || sourceMails.length >= mailTotal) return;
+    setLoadingMore(true);
+    try {
+      const nextPage = mailPage + 1;
+      const result = await client.listMails(nextPage, 20);
+      setRemoteMails((current) => [...(current ?? []), ...result.results.map(toMail)]);
+      setMailPage(nextPage);
+    } catch (error) { setActionStatus(error instanceof Error ? error.message : "加载更多失败"); }
+    finally { setLoadingMore(false); }
+  };
+
   const openMail = async (mail: Mail) => {
     setSelected(mail.id);
+    const cached = detailCache.current.get(mail.id);
+    if (cached) {
+      setRemoteMails((current) => current?.map((item) => item.id === mail.id ? cached : item) ?? current);
+      return;
+    }
     if (!client || mail.body) return;
     try {
       const detail = await client.getParsedMail(mail.id);
-      setRemoteMails((current) => current?.map((item) => item.id === mail.id ? toMail(detail) : item) ?? current);
+      const detailedMail = toMail(detail);
+      detailCache.current.set(mail.id, detailedMail);
+      if (detailCache.current.size > 30) detailCache.current.delete(detailCache.current.keys().next().value as number);
+      setRemoteMails((current) => current?.map((item) => item.id === mail.id ? detailedMail : item) ?? current);
       if (mail.unread) await client.markRead(mail.id, false);
     } catch (error) { setActionStatus(error instanceof Error ? error.message : "邮件加载失败"); }
   };
@@ -167,7 +196,7 @@ function App() {
           <div className="panel-heading"><div><p className="eyebrow">{folder}</p><h1>收件箱 <span>{sourceMails.length}</span></h1></div><button className="refresh-button" onClick={refreshInbox} disabled={loading}>{loading ? "…" : "↻"}</button></div>
           <div className="search-box"><span>⌕</span><input ref={searchInputRef} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索邮件、发件人或验证码" /><kbd>Ctrl K</kbd></div>
           <div className="filter-row"><button className={`filter ${filter === "all" ? "active" : ""}`} onClick={() => setFilter("all")}>全部</button><button className={`filter ${filter === "unread" ? "active" : ""}`} onClick={() => setFilter("unread")}>未读</button><button className={`filter ${filter === "attachments" ? "active" : ""}`} onClick={() => setFilter("attachments")}>带附件</button><button className={`filter otp-filter ${filter === "otp" ? "active" : ""}`} onClick={() => setFilter("otp")}>验证码 <span>{sourceMails.filter((mail) => mail.otp).length}</span></button></div>
-          <div className="mail-list">{visibleMails.map((mail) => <button key={mail.id} onClick={() => openMail(mail)} className={`mail-row ${selected === mail.id ? "selected" : ""}`}><div className="sender-avatar" style={{ background: mail.color }}>{mail.sender.slice(0, 1)}</div><div className="mail-copy"><div className="mail-meta"><strong>{mail.sender}</strong><time>{mail.time}</time></div><div className="subject">{mail.subject} {mail.tag && <span className="tag">{mail.tag}</span>}</div><p>{mail.preview}</p></div>{mail.unread && <i className="unread-dot" />}</button>)}</div>
+          <div className="mail-list">{visibleMails.map((mail) => <button key={mail.id} onClick={() => openMail(mail)} className={`mail-row ${selected === mail.id ? "selected" : ""}`}><div className="sender-avatar" style={{ background: mail.color }}>{mail.sender.slice(0, 1)}</div><div className="mail-copy"><div className="mail-meta"><strong>{mail.sender}</strong><time>{mail.time}</time></div><div className="subject">{mail.subject} {mail.tag && <span className="tag">{mail.tag}</span>}</div><p>{mail.preview}</p></div>{mail.unread && <i className="unread-dot" />}</button>)}{client && sourceMails.length < mailTotal && <button className="load-more" onClick={loadMore} disabled={loadingMore}>{loadingMore ? "加载中…" : `加载更多（剩余 ${mailTotal - sourceMails.length} 封）`}</button>}</div>
         </main>
         <section className="reading-panel">
           <div className="reading-toolbar"><div className="toolbar-left"><button>←</button><button>↗</button><button onClick={deleteActiveMail}>⌫</button></div><div className="toolbar-right"><button>☆</button><button>⋯</button></div></div>
