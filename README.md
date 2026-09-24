@@ -119,3 +119,11 @@ Cloudflare 临时邮箱适配器已根据上游前端和文档实现以下调用
 ## GitHub 项目复用判断
 
 `qsl`（Apache-2.0）适合参考 Rust 邮箱核心、IMAP IDLE、SQLite FTS、HTML 清洗和 OS keychain；`tutabridge`（GPL-3.0）适合参考同步器、离线加密缓存和本地 IMAP/SMTP bridge，但不能直接复制 GPL 代码到本项目；`2fhey`（CC0-1.0）适合参考多语言验证码规则。详细核对记录见 `docs-research.md`。
+
+## UI 与 Cloudflare 辅助后端
+
+本轮 UI 优化恢复并完善了完整布局样式，增加了更清晰的空结果页面、验证码导航动态计数、同步状态动画、操作结果 Toast、连接状态展示和更明确的凭据提示。当前公开仓库同时包含一个可选的 `cloudflare-gateway/` Worker 辅助后端。
+
+辅助网关默认转发到 `https://email.kodao.site`，只处理统一 API 入口、CORS、健康检查和上游转发，不保存 JWT、邮箱凭据、邮件正文或附件，也不做缓存。它不会替代你现有的 `cloudflare_temp_email` Worker；部署前需要复制 `wrangler.toml.example`，并使用 `wrangler secret put GATEWAY_TOKEN` 写入可选的网关令牌。
+
+GitHub 参考项目及许可证、Stars、架构对比见 `docs-research.md`。推荐继续以 `cloudflare_temp_email` 为主后端，参考 `email-explorer` 的 Cloudflare Durable Objects/R2/D1 组织方式，参考 `qsl` 的 Windows 本地优先和安全渲染设计，但不直接复制其代码。

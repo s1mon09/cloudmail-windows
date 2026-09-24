@@ -63,3 +63,17 @@ Worker 路由来自 `worker/src/mails_api/index.ts`：
 ## 结论
 
 CloudMail 应直接根据本地 `cloudflare_temp_email` 源码修正 API 客户端，尤其是 `parsed_mail` 的单数路径与附件字段；163 IMAP/SMTP 应放在 Tauri Rust 后端，凭据写入 Windows Credential Manager，前端只接收统一后的邮件模型。
+
+## 2026-09-24 UI 与 Cloudflare 后端检索
+
+### GitHub 参考项目
+
+- [G4brym/email-explorer](https://github.com/G4brym/email-explorer)：MIT，约 163 stars。完整 Cloudflare Workers 邮箱平台，使用 Workers、Durable Objects、R2、D1、Email Routing 和 Email Sending，具备认证、RBAC、文件夹、附件、全文搜索、回复/转发等能力。适合参考 Cloudflare 后端架构，不建议直接替换当前 tempemail 数据模型。
+- [dreamhunter2333/cloudflare_temp_email](https://github.com/dreamhunter2333/cloudflare_temp_email)：MIT，约 11.8k stars、692 commits。当前项目已基于它适配，包含 D1、Workers、Pages、Rust WASM 邮件解析、R2/S3 附件、SMTP/IMAP proxy、验证码识别、Webhook 和 OAuth/Passkey 等，继续作为主邮箱后端最稳妥。
+- [johnathonfox/qsl](https://github.com/johnathonfox/qsl)：Apache-2.0，Rust/Tauri 2 本地优先邮箱客户端，参考价值包括 OS keychain、HTML 清洗、命令搜索、增量同步和本地全文搜索；但仓库明确表示 Windows 运行时尚未验证、维护承诺有限，不直接复制代码。
+
+### 选型结论
+
+CloudMail 采用“现有 tempemail 主后端 + 可选 Cloudflare Worker 网关”的增量路线。网关只做统一入口、CORS、健康检查和上游转发，不保存邮箱凭据、邮件正文或附件，不启用缓存。这样可以在不迁移 `mail.kodao.site` 数据的情况下获得独立 API 域名和后续扩展入口。网关代码位于 `cloudflare-gateway/`。
+
+Cloudflare 官方文档确认 Email Routing 可将来信交给 Worker，Email Sending 可通过 Worker `EMAIL` binding、REST API 或 authenticated SMTP 发信；这些功能不提供对 163 邮箱的 IMAP 访问，因此 163 仍需客户端内置 `async-imap`/`lettre` 方案。
