@@ -74,6 +74,6 @@ CloudMail 应直接根据本地 `cloudflare_temp_email` 源码修正 API 客户�
 
 ### 选型结论
 
-CloudMail 采用“现有 tempemail 主后端 + 可选 Cloudflare Worker 网关”的增量路线。网关只做统一入口、CORS、健康检查和上游转发，不保存邮箱凭据、邮件正文或附件，不启用缓存。这样可以在不迁移 `mail.kodao.site` 数据的情况下获得独立 API 域名和后续扩展入口。网关代码位于 `cloudflare-gateway/`。
+CloudMail 保留现有 `cloudflare_temp_email` 作为临时邮箱服务，但不再部署额外 Cloudflare 网关或云端 AI。邮件分析使用本机 OpenAI 兼容接口，默认 `http://localhost:8000/v1`，邮件正文不会上传到云端 AI 服务。
 
 Cloudflare 官方文档确认 Email Routing 可将来信交给 Worker，Email Sending 可通过 Worker `EMAIL` binding、REST API 或 authenticated SMTP 发信；这些功能不提供对 163 邮箱的 IMAP 访问，因此 163 仍需客户端内置 `async-imap`/`lettre` 方案。

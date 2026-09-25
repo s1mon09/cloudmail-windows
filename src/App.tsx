@@ -2,6 +2,7 @@ import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { CloudflareClient, normalizeCloudflareMail, type ParsedMail } from "./api/cloudflare";
 import { findOtpCandidates } from "./api/otp";
+import { LocalAiClient } from "./api/local-ai";
 import "./App.css";
 
 type Mail = {
@@ -56,6 +57,10 @@ function App() {
   const [mailPage, setMailPage] = useState(1);
   const [loadingMore, setLoadingMore] = useState(false);
   const [starredIds, setStarredIds] = useState<Set<number>>(new Set());
+  const [aiBaseUrl, setAiBaseUrl] = useState(() => localStorage.getItem("cloudmail-ai-base") || "http://localhost:8000/v1");
+  const [aiModel, setAiModel] = useState(() => localStorage.getItem("cloudmail-ai-model") || "Qwen3.5-9B-AWQ");
+  const [aiAnalysis, setAiAnalysis] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const detailCache = useRef(new Map<number, Mail>());
 
@@ -217,6 +222,44 @@ function App() {
     window.setTimeout(() => setCopied(false), 1600);
   };
 
+  const analyzeActiveMail = async () => {
+    if (!activeMail) return;
+    setAiLoading(true);
+    setAiAnalysis("");
+    try {
+      const content = [
+        `发件人：${activeMail.sender} <${activeMail.address}>`,
+        `主题：${activeMail.subject}`,
+        `时间：${activeMail.time}`,
+        `正文：${activeMail.body || activeMail.preview}`,
+        activeMail.otp ? `检测到验证码：${activeMail.otp}` : "",
+      ].filter(Boolean).join("\n");
+      const result = await new LocalAiClient({ baseUrl: aiBaseUrl, model: aiModel }).chat([
+        { role: "system", content: "你是 CloudMail 的本地邮件分析助手。请用简体中文，简洁回答：1.邮件摘要 2.验证码或关键链接 3.是否可能是钓鱼/风险邮件 4.建议操作。不要编造邮件中不存在的信息。" },
+        { role: "user", content },
+      ]);
+      setAiAnalysis(result);
+      setActionStatus("本地 AI 分析完成");
+    } catch (error) {
+      setActionStatus(error instanceof Error ? error.message : "本地 AI 分析失败");
+    } finally { setAiLoading(false); }
+  };
+
+  const saveAiSettings = () => {
+    localStorage.setItem("cloudmail-ai-base", aiBaseUrl.trim().replace(/\/+$/, ""));
+    localStorage.setItem("cloudmail-ai-model", aiModel.trim());
+    setActionStatus("本地 AI 设置已保存");
+  };
+
+  const testAiConnection = async () => {
+    setAiLoading(true);
+    try {
+      const result = await new LocalAiClient({ baseUrl: aiBaseUrl, model: aiModel }).chat([{ role: "user", content: "只回复：本地 AI 连接成功" }], { maxTokens: 32 });
+      setActionStatus(result || "本地 AI 连接成功");
+    } catch (error) { setActionStatus(error instanceof Error ? error.message : "本地 AI 连接失败"); }
+    finally { setAiLoading(false); }
+  };
+
   return (
     <div className="app-shell">
       <header className="titlebar">
@@ -242,11 +285,12 @@ function App() {
           <article className="message"><div className="message-heading"><div className="sender-avatar large" style={{ background: activeMail.color }}>{activeMail.sender.slice(0, 1)}</div><div><h2>{activeMail.subject}</h2><div className="from-line"><strong>{activeMail.sender}</strong><span>&lt;{activeMail.address}&gt;</span><time>{activeMail.time}</time></div></div></div>
             {activeMail.otp && <div className="otp-card"><div className="otp-icon">◇</div><div className="otp-content"><small>检测到验证码</small><strong>{activeMail.otp}</strong><span>仅在此设备本地解析，不会上传邮件内容</span></div><button onClick={copyOtp}>{copied ? "已复制" : "复制"}</button></div>}
             <div className="message-body">{activeMail.body ? <><p>{activeMail.body}</p>{activeMail.attachments && activeMail.attachments.length > 0 && <p className="muted">附件：{activeMail.attachments.length} 个</p>}</> : <><p>Hi there,</p><p>连接邮箱后点击邮件即可加载真实正文。当前为演示内容。</p><div className="code-box"><span>Verification code</span><strong>{activeMail.otp ?? "—"}</strong></div><p className="muted">邮件正文默认按需加载，减少启动时间和网络流量。</p></>}</div>
+            <div className="ai-actions"><button className="ai-button" onClick={analyzeActiveMail} disabled={aiLoading}>{aiLoading ? "本地模型分析中…" : "✦ 本地 AI 分析"}</button><span>邮件内容只发送到你配置的 localhost 模型</span></div>{aiAnalysis && <div className="ai-result"><strong>AI 分析</strong><p>{aiAnalysis}</p></div>}
           </article>
         </section>
       </div>
       {actionStatus && <div className="status-toast" role="status">{actionStatus}<button onClick={() => setActionStatus("")}>×</button></div>}
-      {showSettings && <div className="modal-backdrop" onClick={() => setShowSettings(false)}><div className="modal" onClick={(e) => e.stopPropagation()}><div className="modal-header"><div><p className="eyebrow">设置</p><h2>账户与同步</h2></div><button onClick={() => setShowSettings(false)}>×</button></div><label>邮箱账户</label><div className="settings-account"><span className={`status-dot ${client ? "orange" : "red"}`} /><div><strong>mail.kodao.site</strong><small>{apiStatus}</small></div><span className="connected">{client ? "已连接" : "未连接"}</span></div><label>Cloudflare API 地址</label><input className="settings-input" value={apiBase} onChange={(e) => setApiBase(e.target.value)} placeholder="https://email.kodao.site" /><label>邮箱凭据 / JWT</label><input className="settings-input" type="password" value={credential} onChange={(e) => setCredential(e.target.value)} placeholder="凭据仅保存在 Windows Credential Manager" /><button className="compose-button connect-button" onClick={connectCloudflare} disabled={loading}>{loading ? "连接中…" : "连接并同步收件箱"}</button><div className="settings-account muted-account"><span className="status-dot red" /><div><strong>163 邮箱</strong><small>使用授权码连接 IMAP/SMTP</small></div><button className="outline-button" onClick={() => setActionStatus("163 邮箱适配器正在开发中")}>即将支持</button></div><div className="settings-note">凭据通过 Tauri 存入 Windows Credential Manager，不会写入日志或同步到云端。</div></div></div>}
+      {showSettings && <div className="modal-backdrop" onClick={() => setShowSettings(false)}><div className="modal" onClick={(e) => e.stopPropagation()}><div className="modal-header"><div><p className="eyebrow">设置</p><h2>账户与同步</h2></div><button onClick={() => setShowSettings(false)}>×</button></div><label>邮箱账户</label><div className="settings-account"><span className={`status-dot ${client ? "orange" : "red"}`} /><div><strong>mail.kodao.site</strong><small>{apiStatus}</small></div><span className="connected">{client ? "已连接" : "未连接"}</span></div><div className="ai-settings"><div className="settings-section-title">本地 AI 分析</div><label>OpenAI 兼容接口</label><input className="settings-input" value={aiBaseUrl} onChange={(e) => setAiBaseUrl(e.target.value)} placeholder="http://localhost:8000/v1" /><label>模型名称</label><input className="settings-input" value={aiModel} onChange={(e) => setAiModel(e.target.value)} placeholder="Qwen3.5-9B-AWQ" /><div className="ai-setting-actions"><button className="outline-button ai-save" onClick={saveAiSettings}>保存设置</button><button className="outline-button ai-save" onClick={testAiConnection} disabled={aiLoading}>{aiLoading ? "测试中…" : "测试连接"}</button></div><small className="settings-note ai-note">默认使用本机 OpenAI 兼容服务，不需要云端密钥。建议先确认模型服务监听 localhost:8000。</small></div><label>Cloudflare API 地址</label><input className="settings-input" value={apiBase} onChange={(e) => setApiBase(e.target.value)} placeholder="https://email.kodao.site" /><label>邮箱凭据 / JWT</label><input className="settings-input" type="password" value={credential} onChange={(e) => setCredential(e.target.value)} placeholder="凭据仅保存在 Windows Credential Manager" /><button className="compose-button connect-button" onClick={connectCloudflare} disabled={loading}>{loading ? "连接中…" : "连接并同步收件箱"}</button><div className="settings-account muted-account"><span className="status-dot red" /><div><strong>163 邮箱</strong><small>使用授权码连接 IMAP/SMTP</small></div><button className="outline-button" onClick={() => setActionStatus("163 邮箱适配器正在开发中")}>即将支持</button></div><div className="settings-note">凭据通过 Tauri 存入 Windows Credential Manager，不会写入日志或同步到云端。</div></div></div>}
       {showCompose && <div className="modal-backdrop" onClick={() => setShowCompose(false)}><div className="modal compose" onClick={(e) => e.stopPropagation()}><div className="modal-header"><div><p className="eyebrow">新邮件</p><h2>写邮件</h2></div><button onClick={() => setShowCompose(false)}>×</button></div><input value={composeTo} onChange={(e) => setComposeTo(e.target.value)} placeholder="收件人" /><input value={composeSubject} onChange={(e) => setComposeSubject(e.target.value)} placeholder="主题" /><textarea value={composeBody} onChange={(e) => setComposeBody(e.target.value)} placeholder="输入邮件内容…" rows={7} /><div className="compose-footer"><span>当前账户：mail.kodao.site</span><button className="compose-button small" onClick={sendCompose}>发送</button></div></div></div>}
     </div>
   );

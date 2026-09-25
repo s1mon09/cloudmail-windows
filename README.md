@@ -124,8 +124,30 @@ Cloudflare 临时邮箱适配器已根据上游前端和文档实现以下调用
 
 ## UI 与 Cloudflare 辅助后端
 
-本轮 UI 优化恢复并完善了完整布局样式，增加了更清晰的空结果页面、验证码导航动态计数、同步状态动画、操作结果 Toast、连接状态展示和更明确的凭据提示。当前公开仓库同时包含一个可选的 `cloudflare-gateway/` Worker 辅助后端。
+本轮 UI 优化恢复并完善了完整布局样式，增加了更清晰的空结果页面、验证码导航动态计数、同步状态动画、操作结果 Toast、连接状态展示和更明确的凭据提示。本项目不再部署额外的 Cloudflare 辅助网关，AI 分析改为调用本机 OpenAI 兼容服务。
 
-辅助网关默认转发到 `https://email.kodao.site`，只处理统一 API 入口、CORS、健康检查和上游转发，不保存 JWT、邮箱凭据、邮件正文或附件，也不做缓存。它不会替代你现有的 `cloudflare_temp_email` Worker；部署前需要复制 `wrangler.toml.example`，并使用 `wrangler secret put GATEWAY_TOKEN` 写入可选的网关令牌。
+Cloudflare 仅继续作为临时邮箱的收件服务；不会为 AI 分析上传邮件内容，也不会部署额外云端 AI。阅读邮件时点击“本地 AI 分析”，客户端会将当前邮件发送到 `http://localhost:8000/v1/chat/completions` 或设置页中配置的 OpenAI 兼容地址。
 
 GitHub 参考项目及许可证、Stars、架构对比见 `docs-research.md`。推荐继续以 `cloudflare_temp_email` 为主后端，参考 `email-explorer` 的 Cloudflare Durable Objects/R2/D1 组织方式，参考 `qsl` 的 Windows 本地优先和安全渲染设计，但不直接复制其代码。
+
+## 本地 AI 邮件分析
+
+CloudMail 支持本机 OpenAI 兼容接口，默认配置：
+
+```text
+接口：http://localhost:8000/v1
+模型：Qwen3.5-9B-AWQ
+
+```
+
+启动本地模型服务后，在邮件阅读区点击“本地 AI 分析”，助手会用简体中文给出邮件摘要、验证码/关键链接、风险判断和建议操作。邮件内容只发送到本机地址，不发送到 Cloudflare 或 OpenAI 云端。
+
+接口兼容以下请求形式：
+
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"Qwen3.5-9B-AWQ","messages":[{"role":"user","content":"你好"}],"temperature":0.2,"max_tokens":512,"stream":false}'
+```
+
+本地 AI 地址和模型可以在“设置 → 本地 AI 分析”中修改，并保存在当前客户端本地浏览器存储中。
