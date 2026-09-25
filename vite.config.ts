@@ -17,6 +17,7 @@ export default defineConfig(() => ({
     port: 1420,
     strictPort: true,
     host: host || false,
+    allowedHosts: [".sg2.manus.computer"],
     hmr: host
       ? {
           protocol: "ws",

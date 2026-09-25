@@ -63,7 +63,7 @@ function App() {
   };
 
   const sourceMails = remoteMails ?? mails;
-  const activeMail = sourceMails.find((mail) => mail.id === selected) ?? sourceMails[0];
+  const activeMail = sourceMails.find((mail) => mail.id === selected) ?? sourceMails[0] ?? mails[0];
   const visibleMails = useMemo(() => sourceMails.filter((mail) => {
     const text = `${mail.sender} ${mail.address} ${mail.subject} ${mail.preview}`.toLowerCase();
     const matchesFilter = filter === "all"
@@ -187,7 +187,7 @@ function App() {
     <div className="app-shell">
       <header className="titlebar">
         <div className="brand"><div className="brand-mark">C</div><span>CloudMail</span><small>Windows</small></div>
-        <div className="titlebar-actions"><button className="icon-button" aria-label="搜索">⌕</button><button className="icon-button" aria-label="设置" onClick={() => setShowSettings(true)}>⚙</button><div className="avatar">K</div></div>
+        <div className="titlebar-actions"><button className="icon-button" aria-label="搜索" onClick={() => searchInputRef.current?.focus()}>⌕</button><button className="icon-button" aria-label="设置" onClick={() => setShowSettings(true)}>⚙</button><div className="avatar">K</div></div>
       </header>
       <div className="workspace">
         <aside className="sidebar">
