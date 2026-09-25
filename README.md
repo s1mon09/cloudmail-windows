@@ -11,7 +11,7 @@ CloudMail 是一个轻量的 Windows 原生邮箱管理客户端原型，基于 
 - 账户与同步设置窗口
 - 预留 `mail.kodao.site`、163 IMAP/SMTP 账户入口
 
-当前邮件数据为演示数据，真实 API 和 IMAP/SMTP 连接将在下一阶段接入。不要把真实邮箱密码或 163 授权码写入源码。
+未连接账户时显示演示数据；连接后使用 Cloudflare 真实 API。不要把真实邮箱密码或 163 授权码写入源码。
 
 ## Windows 开发环境
 
@@ -65,11 +65,12 @@ Cloudflare 临时邮箱适配器已根据上游前端和文档实现以下调用
 | 凭据登录 | `POST /open_api/credential_login` |
 | 密码登录 | `POST /api/address_login` |
 | 当前邮箱设置 | `GET /api/settings` |
-| 邮件列表 | `GET /api/mails?limit=20&offset=0` |
+| 邮件轻量列表 | `GET /api/mails?limit=20&offset=0` |
+| 邮件解析列表 | `GET /api/parsed_mails?limit=20&offset=0` |
 | 邮件详情 | `GET /api/mails/:id` |
 | 已读状态 | `PATCH /api/mails/:id/read` |
 | 删除邮件 | `DELETE /api/mails/:id` |
-| 发信 | `POST /api/send` |
+| 发信 | `POST /api/send_mail` |
 | 创建地址 | `POST /api/new_address` |
 
 请求会附带 `Authorization: Bearer <credential>`、`x-lang` 和本地设备指纹。错误会统一转为带 HTTP 状态码的 `CloudflareApiError`。
@@ -105,6 +106,7 @@ Cloudflare 临时邮箱适配器已根据上游前端和文档实现以下调用
 - 刷新收件箱、自动标记已读、删除当前邮件。
 - 优先使用服务端解析字段，客户端本地识别验证码并提供复制。
 - 通过 `/api/send_mail` 发送纯文本邮件。
+- 阅读区上一封、下一封、删除、标记未读、星标和更多操作按钮均已接入交互；星标目前保存在当前客户端会话中，上游暂未提供星标字段。
 
 前端验证命令为 `pnpm build`。Windows 原生 Rust 检查应在安装 Rust、Windows SDK 和 WebView2 的 Windows runner 上执行；GitHub Actions 工作流会在 Windows 环境中完成打包验证。
 

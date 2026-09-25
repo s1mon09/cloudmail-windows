@@ -18,6 +18,7 @@ type Mail = {
   body?: string;
   html?: string;
   attachments?: unknown[];
+  starred?: boolean;
 };
 
 const mails: Mail[] = [
@@ -54,24 +55,29 @@ function App() {
   const [mailTotal, setMailTotal] = useState(0);
   const [mailPage, setMailPage] = useState(1);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [starredIds, setStarredIds] = useState<Set<number>>(new Set());
   const searchInputRef = useRef<HTMLInputElement>(null);
   const detailCache = useRef(new Map<number, Mail>());
 
   const selectFolder = (label: string) => {
     setFolder(label);
-    setFilter(label === "验证码" ? "otp" : "all");
+    if (label === "验证码") setFilter("otp");
+    else if (label === "收件箱") setFilter("all");
+    else if (label === "已加星标") setActionStatus("星标邮件筛选已启用");
+    else setActionStatus(`${label}功能正在接入，当前按钮已响应`);
   };
 
   const sourceMails = remoteMails ?? mails;
   const activeMail = sourceMails.find((mail) => mail.id === selected) ?? sourceMails[0] ?? mails[0];
   const visibleMails = useMemo(() => sourceMails.filter((mail) => {
     const text = `${mail.sender} ${mail.address} ${mail.subject} ${mail.preview}`.toLowerCase();
+    const matchesFolder = folder !== "已加星标" || starredIds.has(mail.id);
     const matchesFilter = filter === "all"
       || (filter === "unread" && mail.unread)
       || (filter === "attachments" && Boolean(mail.attachments?.length))
       || (filter === "otp" && Boolean(mail.otp));
-    return matchesFilter && text.includes(deferredQuery.toLowerCase());
-  }), [deferredQuery, filter, sourceMails]);
+    return matchesFolder && matchesFilter && text.includes(deferredQuery.toLowerCase());
+  }), [deferredQuery, filter, folder, sourceMails, starredIds]);
 
   useEffect(() => {
     invoke<string | null>("get_secret", { account: "cloudflare-credential" }).then((saved) => {
@@ -97,7 +103,7 @@ function App() {
       const apiClient = new CloudflareClient(apiBase);
       const settings = await apiClient.credentialLogin(credential);
       await invoke("save_secret", { account: "cloudflare-credential", secret: credential });
-      const result = await apiClient.listMails(1, 20);
+      const result = await apiClient.listParsedMails(1, 20);
       setClient(apiClient);
       setRemoteMails(result.results.map(toMail));
       setMailTotal(result.count);
@@ -120,7 +126,7 @@ function App() {
     if (!client) { setShowSettings(true); return; }
     setLoading(true); setActionStatus("");
     try {
-      const result = await client.listMails(1, 20);
+      const result = await client.listParsedMails(1, 20);
       setRemoteMails(result.results.map(toMail));
       setMailTotal(result.count);
       setMailPage(1);
@@ -134,7 +140,7 @@ function App() {
     setLoadingMore(true);
     try {
       const nextPage = mailPage + 1;
-      const result = await client.listMails(nextPage, 20);
+      const result = await client.listParsedMails(nextPage, 20);
       setRemoteMails((current) => [...(current ?? []), ...result.results.map(toMail)]);
       setMailPage(nextPage);
     } catch (error) { setActionStatus(error instanceof Error ? error.message : "加载更多失败"); }
@@ -155,7 +161,10 @@ function App() {
       detailCache.current.set(mail.id, detailedMail);
       if (detailCache.current.size > 30) detailCache.current.delete(detailCache.current.keys().next().value as number);
       setRemoteMails((current) => current?.map((item) => item.id === mail.id ? detailedMail : item) ?? current);
-      if (mail.unread) await client.markRead(mail.id, false);
+      if (mail.unread) {
+        await client.markRead(mail.id, false);
+        setRemoteMails((current) => current?.map((item) => item.id === mail.id ? { ...item, unread: false } : item) ?? current);
+      }
     } catch (error) { setActionStatus(error instanceof Error ? error.message : "邮件加载失败"); }
   };
 
@@ -166,6 +175,31 @@ function App() {
       setRemoteMails((current) => current?.filter((item) => item.id !== activeMail.id) ?? current);
       setActionStatus("邮件已删除");
     } catch (error) { setActionStatus(error instanceof Error ? error.message : "删除失败"); }
+  };
+
+  const toggleStar = () => {
+    setStarredIds((current) => {
+      const next = new Set(current);
+      if (next.has(activeMail.id)) next.delete(activeMail.id); else next.add(activeMail.id);
+      return next;
+    });
+    setActionStatus(starredIds.has(activeMail.id) ? "已取消星标" : "已加星标");
+  };
+
+  const markActiveUnread = async () => {
+    if (!client) { setActionStatus("演示模式：已记录为未读"); return; }
+    try {
+      await client.markRead(activeMail.id, true);
+      setRemoteMails((current) => current?.map((mail) => mail.id === activeMail.id ? { ...mail, unread: true } : mail) ?? current);
+      setActionStatus("已标记为未读");
+    } catch (error) { setActionStatus(error instanceof Error ? error.message : "标记未读失败"); }
+  };
+
+  const moveSelection = (direction: -1 | 1) => {
+    const index = visibleMails.findIndex((mail) => mail.id === activeMail.id);
+    const next = visibleMails[index + direction];
+    if (next) openMail(next);
+    else setActionStatus(direction < 0 ? "已经是第一封邮件" : "已经是最后一封邮件");
   };
 
   const sendCompose = async () => {
@@ -194,17 +228,17 @@ function App() {
           <button className="compose-button" onClick={() => setShowCompose(true)}><span>＋</span> 写邮件</button>
           <div className="account-card"><div className="account-icon">K</div><div><strong>mail.kodao.site</strong><small>Cloudflare 临时邮箱</small></div><span className="chevron">⌄</span></div>
           <nav className="nav-list">{navItems.map(([label, icon, count]) => <button key={label} className={`nav-item ${folder === label ? "active" : ""}`} onClick={() => selectFolder(label)}><span className="nav-icon">{icon}</span><span>{label}</span>{count && <b>{label === "验证码" ? sourceMails.filter((mail) => mail.otp).length : count}</b>}</button>)}</nav>
-          <div className="sidebar-section"><div className="section-label">邮箱账户 <button onClick={() => setShowSettings(true)}>＋</button></div><button className="account-row"><span className="status-dot orange" /> 临时邮箱 <em>12</em></button><button className="account-row"><span className="status-dot red" /> 163 邮箱 <em>0</em></button></div>
+          <div className="sidebar-section"><div className="section-label">邮箱账户 <button onClick={() => setShowSettings(true)}>＋</button></div><button className="account-row" onClick={() => { setFolder("收件箱"); setFilter("all"); }}><span className="status-dot orange" /> 临时邮箱 <em>{client ? mailTotal : 12}</em></button><button className="account-row" onClick={() => setActionStatus("163 邮箱适配器正在开发中")}><span className="status-dot red" /> 163 邮箱 <em>0</em></button></div>
           <div className="sidebar-footer"><span className={`sync-dot ${loading ? "syncing" : ""}`} /> {actionStatus || (client ? "已连接 · 可同步" : "演示数据")}</div>
         </aside>
         <main className="mail-list-panel">
           <div className="panel-heading"><div><p className="eyebrow">{folder}</p><h1>{folder === "验证码" ? "验证码" : "收件箱"} <span>{sourceMails.length}{mailTotal > sourceMails.length && ` / ${mailTotal}`}</span></h1></div><button className="refresh-button" onClick={refreshInbox} disabled={loading} title="刷新收件箱">{loading ? "…" : "↻"}</button></div>
           <div className="search-box"><span>⌕</span><input ref={searchInputRef} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索邮件、发件人或验证码" /><kbd>Ctrl K</kbd></div>
           <div className="filter-row"><button className={`filter ${filter === "all" ? "active" : ""}`} onClick={() => setFilter("all")}>全部</button><button className={`filter ${filter === "unread" ? "active" : ""}`} onClick={() => setFilter("unread")}>未读</button><button className={`filter ${filter === "attachments" ? "active" : ""}`} onClick={() => setFilter("attachments")}>带附件</button><button className={`filter otp-filter ${filter === "otp" ? "active" : ""}`} onClick={() => setFilter("otp")}>验证码 <span>{sourceMails.filter((mail) => mail.otp).length}</span></button></div>
-          <div className="mail-list">{visibleMails.length ? visibleMails.map((mail) => <button key={mail.id} onClick={() => openMail(mail)} className={`mail-row ${selected === mail.id ? "selected" : ""}`}><div className="sender-avatar" style={{ background: mail.color }}>{mail.sender.slice(0, 1)}</div><div className="mail-copy"><div className="mail-meta"><strong>{mail.sender}</strong><time>{mail.time}</time></div><div className="subject">{mail.subject} {mail.tag && <span className="tag">{mail.tag}</span>}</div><p>{mail.preview}</p></div>{mail.unread && <i className="unread-dot" />}</button>) : <div className="empty-state"><div className="empty-icon">⌕</div><strong>没有找到邮件</strong><span>试试更换筛选条件或搜索关键词</span><button onClick={() => { setQuery(""); setFilter("all"); }}>清除筛选</button></div>}{client && sourceMails.length < mailTotal && <button className="load-more" onClick={loadMore} disabled={loadingMore}>{loadingMore ? "加载中…" : `加载更多（剩余 ${mailTotal - sourceMails.length} 封）`}</button>}</div>
+          <div className="mail-list">{visibleMails.length ? visibleMails.map((mail) => <button key={mail.id} onClick={() => openMail(mail)} className={`mail-row ${selected === mail.id ? "selected" : ""}`}><div className="sender-avatar" style={{ background: mail.color }}>{mail.sender.slice(0, 1)}</div><div className="mail-copy"><div className="mail-meta"><strong>{mail.sender}</strong><time>{mail.time}</time></div><div className="subject">{mail.subject} {mail.tag && <span className="tag">{mail.tag}</span>}</div><p>{mail.preview}</p></div>{starredIds.has(mail.id) && <span className="row-star">★</span>}{mail.unread && <i className="unread-dot" />}</button>) : <div className="empty-state"><div className="empty-icon">⌕</div><strong>没有找到邮件</strong><span>试试更换筛选条件或搜索关键词</span><button onClick={() => { setQuery(""); setFilter("all"); setFolder("收件箱"); }}>清除筛选</button></div>}{client && sourceMails.length < mailTotal && <button className="load-more" onClick={loadMore} disabled={loadingMore}>{loadingMore ? "加载中…" : `加载更多（剩余 ${mailTotal - sourceMails.length} 封）`}</button>}</div>
         </main>
         <section className="reading-panel">
-          <div className="reading-toolbar"><div className="toolbar-left"><button>←</button><button>↗</button><button onClick={deleteActiveMail}>⌫</button></div><div className="toolbar-right"><button>☆</button><button>⋯</button></div></div>
+          <div className="reading-toolbar"><div className="toolbar-left"><button onClick={() => moveSelection(-1)} title="上一封">←</button><button onClick={() => moveSelection(1)} title="下一封">↗</button><button onClick={deleteActiveMail} title="删除">⌫</button><button onClick={markActiveUnread} title="标记未读">✉</button></div><div className="toolbar-right"><button onClick={toggleStar} title="星标">{starredIds.has(activeMail.id) ? "★" : "☆"}</button><button onClick={() => setActionStatus("更多操作：可使用删除、星标或标记未读")} title="更多操作">⋯</button></div></div>
           <article className="message"><div className="message-heading"><div className="sender-avatar large" style={{ background: activeMail.color }}>{activeMail.sender.slice(0, 1)}</div><div><h2>{activeMail.subject}</h2><div className="from-line"><strong>{activeMail.sender}</strong><span>&lt;{activeMail.address}&gt;</span><time>{activeMail.time}</time></div></div></div>
             {activeMail.otp && <div className="otp-card"><div className="otp-icon">◇</div><div className="otp-content"><small>检测到验证码</small><strong>{activeMail.otp}</strong><span>仅在此设备本地解析，不会上传邮件内容</span></div><button onClick={copyOtp}>{copied ? "已复制" : "复制"}</button></div>}
             <div className="message-body">{activeMail.body ? <><p>{activeMail.body}</p>{activeMail.attachments && activeMail.attachments.length > 0 && <p className="muted">附件：{activeMail.attachments.length} 个</p>}</> : <><p>Hi there,</p><p>连接邮箱后点击邮件即可加载真实正文。当前为演示内容。</p><div className="code-box"><span>Verification code</span><strong>{activeMail.otp ?? "—"}</strong></div><p className="muted">邮件正文默认按需加载，减少启动时间和网络流量。</p></>}</div>
@@ -212,7 +246,7 @@ function App() {
         </section>
       </div>
       {actionStatus && <div className="status-toast" role="status">{actionStatus}<button onClick={() => setActionStatus("")}>×</button></div>}
-      {showSettings && <div className="modal-backdrop" onClick={() => setShowSettings(false)}><div className="modal" onClick={(e) => e.stopPropagation()}><div className="modal-header"><div><p className="eyebrow">设置</p><h2>账户与同步</h2></div><button onClick={() => setShowSettings(false)}>×</button></div><label>邮箱账户</label><div className="settings-account"><span className={`status-dot ${client ? "orange" : "red"}`} /><div><strong>mail.kodao.site</strong><small>{apiStatus}</small></div><span className="connected">{client ? "已连接" : "未连接"}</span></div><label>Cloudflare API 地址</label><input className="settings-input" value={apiBase} onChange={(e) => setApiBase(e.target.value)} placeholder="https://email.kodao.site" /><label>邮箱凭据 / JWT</label><input className="settings-input" type="password" value={credential} onChange={(e) => setCredential(e.target.value)} placeholder="凭据仅保存在 Windows Credential Manager" /><button className="compose-button connect-button" onClick={connectCloudflare} disabled={loading}>{loading ? "连接中…" : "连接并同步收件箱"}</button><div className="settings-account muted-account"><span className="status-dot red" /><div><strong>163 邮箱</strong><small>使用授权码连接 IMAP/SMTP</small></div><button className="outline-button">即将支持</button></div><div className="settings-note">凭据通过 Tauri 存入 Windows Credential Manager，不会写入日志或同步到云端。</div></div></div>}
+      {showSettings && <div className="modal-backdrop" onClick={() => setShowSettings(false)}><div className="modal" onClick={(e) => e.stopPropagation()}><div className="modal-header"><div><p className="eyebrow">设置</p><h2>账户与同步</h2></div><button onClick={() => setShowSettings(false)}>×</button></div><label>邮箱账户</label><div className="settings-account"><span className={`status-dot ${client ? "orange" : "red"}`} /><div><strong>mail.kodao.site</strong><small>{apiStatus}</small></div><span className="connected">{client ? "已连接" : "未连接"}</span></div><label>Cloudflare API 地址</label><input className="settings-input" value={apiBase} onChange={(e) => setApiBase(e.target.value)} placeholder="https://email.kodao.site" /><label>邮箱凭据 / JWT</label><input className="settings-input" type="password" value={credential} onChange={(e) => setCredential(e.target.value)} placeholder="凭据仅保存在 Windows Credential Manager" /><button className="compose-button connect-button" onClick={connectCloudflare} disabled={loading}>{loading ? "连接中…" : "连接并同步收件箱"}</button><div className="settings-account muted-account"><span className="status-dot red" /><div><strong>163 邮箱</strong><small>使用授权码连接 IMAP/SMTP</small></div><button className="outline-button" onClick={() => setActionStatus("163 邮箱适配器正在开发中")}>即将支持</button></div><div className="settings-note">凭据通过 Tauri 存入 Windows Credential Manager，不会写入日志或同步到云端。</div></div></div>}
       {showCompose && <div className="modal-backdrop" onClick={() => setShowCompose(false)}><div className="modal compose" onClick={(e) => e.stopPropagation()}><div className="modal-header"><div><p className="eyebrow">新邮件</p><h2>写邮件</h2></div><button onClick={() => setShowCompose(false)}>×</button></div><input value={composeTo} onChange={(e) => setComposeTo(e.target.value)} placeholder="收件人" /><input value={composeSubject} onChange={(e) => setComposeSubject(e.target.value)} placeholder="主题" /><textarea value={composeBody} onChange={(e) => setComposeBody(e.target.value)} placeholder="输入邮件内容…" rows={7} /><div className="compose-footer"><span>当前账户：mail.kodao.site</span><button className="compose-button small" onClick={sendCompose}>发送</button></div></div></div>}
     </div>
   );
