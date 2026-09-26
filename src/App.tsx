@@ -156,6 +156,7 @@ function App() {
       if (settings.address) setCloudAddress(settings.address);
       setApiStatus(`已连接 · ${settings.address || "Cloudflare 邮箱"}`);
       setShowSettings(false);
+      void syncCloudPull(settings.address || cloudAddress);
     } catch (error) {
       setApiStatus(error instanceof Error ? error.message : "连接失败");
     }
@@ -188,6 +189,7 @@ function App() {
       setActiveProvider("163"); setFolder("收件箱"); setFilter("all");
       setShowSettings(false);
       setActionStatus(`已连接 163 · ${metas.length} 封邮件`);
+      void syncCloudPull(email);
     } catch (error) { setActionStatus(error instanceof Error ? error.message : String(error)); }
     finally { setLoading(false); }
   };
@@ -435,6 +437,26 @@ function App() {
       setActionStatus(`云同步完成 · ${result.accepted} 条状态`);
     } catch (error) { setActionStatus(error instanceof Error ? error.message : "云同步失败"); }
     finally { setSyncLoading(false); }
+  };
+
+  const syncCloudPull = async (accountRef: string) => {
+    if (!syncBaseUrl.trim() || !syncToken.trim()) return;
+    try {
+      const items = (await new CloudSyncClient(syncBaseUrl, syncToken).pull(accountRef)).items;
+      if (!items.length) return;
+      setStarredIds((current) => {
+        const next = new Set(current);
+        items.forEach((it) => { const id = Number(it.mail_id); if (Number.isFinite(id)) { if (it.starred) next.add(id); else next.delete(id); } });
+        return next;
+      });
+      if (activeProvider === "cloudflare") {
+        setRemoteMails((current) => (current ?? []).map((m) => {
+          const sync = items.find((it) => String(it.mail_id) === String(m.id) && it.is_read !== undefined);
+          return sync ? { ...m, unread: sync.is_read ? false : m.unread } : m;
+        }));
+      }
+      setActionStatus(`已从云端拉取 ${items.length} 条状态（已读 / 星标 / AI）`);
+    } catch { /* 拉取失败保持本地状态，不打扰用户 */ }
   };
 
   return (
