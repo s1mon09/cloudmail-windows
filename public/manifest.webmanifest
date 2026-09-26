@@ -1,0 +1,11 @@
+{
+  "name": "CloudMail",
+  "short_name": "CloudMail",
+  "description": "轻量的临时邮箱与 163 邮箱管理工具",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#141413",
+  "theme_color": "#d97757",
+  "lang": "zh-CN",
+  "icons": []
+}

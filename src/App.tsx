@@ -4,6 +4,7 @@ import { CloudflareClient, normalizeCloudflareMail, type ParsedMail } from "./ap
 import { findOtpCandidates } from "./api/otp";
 import { LocalAiClient } from "./api/local-ai";
 import { MAIL_ANALYSIS_SYSTEM_PROMPT, buildMailAnalysisPrompt } from "./api/ai-prompts";
+import { CloudSyncClient } from "./api/cloud-sync";
 import "./App.css";
 
 type Mail = {
@@ -63,6 +64,10 @@ function App() {
   const [aiModel, setAiModel] = useState(() => localStorage.getItem("cloudmail-ai-model") || "Qwen3.5-9B-AWQ");
   const [aiAnalysis, setAiAnalysis] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
+  const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
+  const [syncBaseUrl, setSyncBaseUrl] = useState(() => sessionStorage.getItem("cloudmail-sync-base") || "");
+  const [syncToken, setSyncToken] = useState(() => sessionStorage.getItem("cloudmail-sync-token") || "");
+  const [syncLoading, setSyncLoading] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const detailCache = useRef(new Map<number, Mail>());
   const [neteaseEmail, setNeteaseEmail] = useState("");
@@ -94,6 +99,14 @@ function App() {
       || (filter === "otp" && Boolean(mail.otp));
     return matchesFolder && matchesFilter && text.includes(deferredQuery.toLowerCase());
   }), [deferredQuery, filter, folder, sourceMails, starredIds]);
+
+  const aiSections = useMemo(() => {
+    if (!aiAnalysis) return [];
+    return aiAnalysis.split(/(?=【(?:摘要|验证码|关键链接|风险等级|风险依据|建议|置信度)】)/g).map((part) => {
+      const match = part.match(/^【([^】]+)】\s*([\s\S]*)$/);
+      return match ? { title: match[1], content: match[2].trim() } : { title: "分析结果", content: part.trim() };
+    }).filter((part) => part.content);
+  }, [aiAnalysis]);
 
   useEffect(() => {
     let cancelled = false;
@@ -233,6 +246,7 @@ function App() {
 
   const openMail = async (mail: Mail) => {
     setSelected(mail.id);
+    setMobileDetailOpen(true);
     const updateList = (detailedMail: Mail) => {
       if (mail.provider === "163") {
         setNeteaseMails((current) => current?.map((item) => item.id === mail.id ? detailedMail : item) ?? current);
@@ -372,6 +386,20 @@ function App() {
     finally { setAiLoading(false); }
   };
 
+  const syncCloudState = async () => {
+    if (!syncBaseUrl.trim() || !syncToken.trim()) { setActionStatus("请先填写 Cloudflare 同步地址和令牌"); return; }
+    setSyncLoading(true);
+    try {
+      const accountRef = activeProvider === "163" ? neteaseEmail.trim() : cloudAddress;
+      const items = sourceMails.map((mail) => ({ account_ref: accountRef, provider: mail.provider || activeProvider, mail_id: String(mail.id), is_read: !mail.unread, starred: starredIds.has(mail.id), ai_result: mail.id === activeMail.id ? aiAnalysis : undefined, updated_at: Date.now() }));
+      const result = await new CloudSyncClient(syncBaseUrl, syncToken).push(items);
+      sessionStorage.setItem("cloudmail-sync-base", syncBaseUrl.trim().replace(/\/+$/, ""));
+      sessionStorage.setItem("cloudmail-sync-token", syncToken.trim());
+      setActionStatus(`云同步完成 · ${result.accepted} 条状态`);
+    } catch (error) { setActionStatus(error instanceof Error ? error.message : "云同步失败"); }
+    finally { setSyncLoading(false); }
+  };
+
   return (
     <div className="app-shell">
       <header className="titlebar">
@@ -392,17 +420,17 @@ function App() {
           <div className="filter-row"><button className={`filter ${filter === "all" ? "active" : ""}`} onClick={() => setFilter("all")}>全部</button><button className={`filter ${filter === "unread" ? "active" : ""}`} onClick={() => setFilter("unread")}>未读</button><button className={`filter ${filter === "attachments" ? "active" : ""}`} onClick={() => setFilter("attachments")}>带附件</button><button className={`filter otp-filter ${filter === "otp" ? "active" : ""}`} onClick={() => setFilter("otp")}>验证码 <span>{sourceMails.filter((mail) => mail.otp).length}</span></button></div>
           <div className="mail-list">{visibleMails.length ? visibleMails.map((mail) => <button key={mail.id} onClick={() => openMail(mail)} className={`mail-row ${selected === mail.id ? "selected" : ""}`}><div className="sender-avatar" style={{ background: mail.color }}>{mail.sender.slice(0, 1)}</div><div className="mail-copy"><div className="mail-meta"><strong>{mail.sender}</strong><time>{mail.time}</time></div><div className="subject">{mail.subject} {mail.tag && <span className="tag">{mail.tag}</span>}</div><p>{mail.preview}</p></div>{starredIds.has(mail.id) && <span className="row-star">★</span>}{mail.unread && <i className="unread-dot" />}</button>) : <div className="empty-state"><div className="empty-icon">⌕</div><strong>没有找到邮件</strong><span>试试更换筛选条件或搜索关键词</span><button onClick={() => { setQuery(""); setFilter("all"); setFolder("收件箱"); }}>清除筛选</button></div>}{activeProvider === "cloudflare" && client && sourceMails.length < mailTotal && <button className="load-more" onClick={loadMore} disabled={loadingMore}>{loadingMore ? "加载中…" : `加载更多（剩余 ${mailTotal - sourceMails.length} 封）`}</button>}</div>
         </main>
-        <section className="reading-panel">
-          <div className="reading-toolbar"><div className="toolbar-left"><button onClick={() => moveSelection(-1)} title="上一封">←</button><button onClick={() => moveSelection(1)} title="下一封">↗</button><button onClick={deleteActiveMail} title="删除">⌫</button><button onClick={markActiveUnread} title="标记未读">✉</button></div><div className="toolbar-right"><button onClick={toggleStar} title="星标">{starredIds.has(activeMail.id) ? "★" : "☆"}</button><button onClick={() => setActionStatus("更多操作：可使用删除、星标或标记未读")} title="更多操作">⋯</button></div></div>
+        <section className={`reading-panel ${mobileDetailOpen ? "mobile-open" : ""}`}>
+          <div className="reading-toolbar"><div className="toolbar-left"><button className="mobile-close" onClick={() => setMobileDetailOpen(false)} title="返回列表">×</button><button onClick={() => moveSelection(-1)} title="上一封">←</button><button onClick={() => moveSelection(1)} title="下一封">↗</button><button onClick={deleteActiveMail} title="删除">⌫</button><button onClick={markActiveUnread} title="标记未读">✉</button></div><div className="toolbar-right"><button onClick={toggleStar} title="星标">{starredIds.has(activeMail.id) ? "★" : "☆"}</button><button onClick={() => setActionStatus("更多操作：可使用删除、星标或标记未读")} title="更多操作">⋯</button></div></div>
           <article className="message"><div className="message-heading"><div className="sender-avatar large" style={{ background: activeMail.color }}>{activeMail.sender.slice(0, 1)}</div><div><h2>{activeMail.subject}</h2><div className="from-line"><strong>{activeMail.sender}</strong><span>&lt;{activeMail.address}&gt;</span><time>{activeMail.time}</time></div></div></div>
             {activeMail.otp && <div className="otp-card"><div className="otp-icon">◇</div><div className="otp-content"><small>检测到验证码</small><strong>{activeMail.otp}</strong><span>仅在此设备本地解析，不会上传邮件内容</span></div><button onClick={copyOtp}>{copied ? "已复制" : "复制"}</button></div>}
             <div className="message-body">{activeMail.body ? <><p>{activeMail.body}</p>{activeMail.attachments && activeMail.attachments.length > 0 && <p className="muted">附件：{activeMail.attachments.length} 个</p>}</> : <><p>{activeProvider === "163" ? (neteaseMails ? "点击邮件加载 163 信箱真实正文。" : "163 邮箱尚未连接，请在设置中填写邮箱和授权码。") : (client ? "点击邮件加载真实正文。" : "临时邮箱尚未连接，请在设置中连接邮箱或创建临时邮箱地址。")}</p><p className="muted">邮件正文按需加载，减少启动时间和网络流量。</p></>}</div>
-            <div className="ai-actions"><button className="ai-button" onClick={analyzeActiveMail} disabled={aiLoading}>{aiLoading ? "本地模型分析中…" : "✦ 本地 AI 分析"}</button><span>邮件内容只发送到你配置的 localhost 模型</span></div>{aiAnalysis && <div className="ai-result"><strong>AI 分析</strong><p>{aiAnalysis}</p></div>}
+            <div className="ai-actions"><button className="ai-button" onClick={analyzeActiveMail} disabled={aiLoading}>{aiLoading ? "本地模型分析中…" : "✦ 本地 AI 分析"}</button><span>邮件内容只发送到你配置的 localhost 模型</span></div>{aiSections.length > 0 && <div className="ai-result"><strong>AI 分析</strong><div className="ai-sections">{aiSections.map((section) => <div className="ai-section" key={section.title}><b>{section.title}</b><p>{section.content}</p></div>)}</div></div>}
           </article>
         </section>
       </div>
       {actionStatus && <div className="status-toast" role="status">{actionStatus}<button onClick={() => setActionStatus("")}>×</button></div>}
-      {showSettings && <div className="modal-backdrop" onClick={() => setShowSettings(false)}><div className="modal" onClick={(e) => e.stopPropagation()}><div className="modal-header"><div><p className="eyebrow">设置</p><h2>账户与同步</h2></div><button onClick={() => setShowSettings(false)}>×</button></div><label>邮箱账户</label><div className="settings-account"><span className={`status-dot ${client ? "orange" : "red"}`} /><div><strong>{cloudAddress}</strong><small>{apiStatus}</small></div><span className="connected">{client ? "已连接" : "未连接"}</span></div><div className="ai-settings"><div className="settings-section-title">本地 AI 分析</div><label>OpenAI 兼容接口</label><input className="settings-input" value={aiBaseUrl} onChange={(e) => setAiBaseUrl(e.target.value)} placeholder="http://localhost:8000/v1" /><label>模型名称</label><input className="settings-input" value={aiModel} onChange={(e) => setAiModel(e.target.value)} placeholder="Qwen3.5-9B-AWQ" /><div className="ai-setting-actions"><button className="outline-button ai-save" onClick={saveAiSettings}>保存设置</button><button className="outline-button ai-save" onClick={testAiConnection} disabled={aiLoading}>{aiLoading ? "测试中…" : "测试连接"}</button></div><small className="settings-note ai-note">默认使用本机 OpenAI 兼容服务，不需要云端密钥。建议先确认模型服务监听 localhost:8000。</small></div><label>Cloudflare API 地址</label><input className="settings-input" value={apiBase} onChange={(e) => setApiBase(e.target.value)} placeholder="https://email.kodao.site" /><label>邮箱凭据 / JWT</label><input className="settings-input" type="password" value={credential} onChange={(e) => setCredential(e.target.value)} placeholder="凭据仅保存在 Windows Credential Manager" /><button className="compose-button connect-button" onClick={() => connectCloudflare()} disabled={loading}>{loading ? "连接中…" : "连接并同步收件箱"}</button><button className="outline-button ai-save" onClick={openCreateAddress} style={{ width: "100%" }}>＋ 创建临时邮箱地址</button><div className="ai-settings"><div className="settings-section-title">163 邮箱（IMAP/SMTP）</div><label>邮箱地址</label><input className="settings-input" value={neteaseEmail} onChange={(e) => setNeteaseEmail(e.target.value)} placeholder="you@163.com" /><label>客户端授权码</label><input className="settings-input" type="password" value={neteaseCode} onChange={(e) => setNeteaseCode(e.target.value)} placeholder="在 163 网页版「设置→客户端授权密码」获取" /><button className="compose-button connect-button" onClick={() => connectNetease()} disabled={loading}>{loading ? "连接中…" : "连接并同步 163"}</button><small className="settings-note ai-note">请先在 163 设置里开启 IMAP/SMTP 并生成授权码，使用授权码而不是网页登录密码。授权码仅保存在 Windows Credential Manager。</small></div><div className="settings-note">凭据通过 Tauri 存入 Windows Credential Manager，不会写入日志或同步到云端。</div></div></div>}
+      {showSettings && <div className="modal-backdrop" onClick={() => setShowSettings(false)}><div className="modal" onClick={(e) => e.stopPropagation()}><div className="modal-header"><div><p className="eyebrow">设置</p><h2>账户与同步</h2></div><button onClick={() => setShowSettings(false)}>×</button></div><label>邮箱账户</label><div className="settings-account"><span className={`status-dot ${client ? "orange" : "red"}`} /><div><strong>{cloudAddress}</strong><small>{apiStatus}</small></div><span className="connected">{client ? "已连接" : "未连接"}</span></div><div className="ai-settings"><div className="settings-section-title">本地 AI 分析</div><label>OpenAI 兼容接口</label><input className="settings-input" value={aiBaseUrl} onChange={(e) => setAiBaseUrl(e.target.value)} placeholder="http://localhost:8000/v1" /><label>模型名称</label><input className="settings-input" value={aiModel} onChange={(e) => setAiModel(e.target.value)} placeholder="Qwen3.5-9B-AWQ" /><div className="ai-setting-actions"><button className="outline-button ai-save" onClick={saveAiSettings}>保存设置</button><button className="outline-button ai-save" onClick={testAiConnection} disabled={aiLoading}>{aiLoading ? "测试中…" : "测试连接"}</button></div><small className="settings-note ai-note">默认使用本机 OpenAI 兼容服务，不需要云端密钥。建议先确认模型服务监听 localhost:8000。</small></div><div className="ai-settings sync-settings"><div className="settings-section-title">Cloudflare 云同步（可选）</div><label>同步 Worker 地址</label><input className="settings-input" value={syncBaseUrl} onChange={(e) => setSyncBaseUrl(e.target.value)} placeholder="https://cloudmail-sync.example.workers.dev" /><label>同步令牌</label><input className="settings-input" type="password" value={syncToken} onChange={(e) => setSyncToken(e.target.value)} placeholder="只保存在本次浏览器会话" /><button className="outline-button ai-save" onClick={syncCloudState} disabled={syncLoading}>{syncLoading ? "同步中…" : "同步已读、星标和 AI 结果"}</button><small className="settings-note ai-note">默认不上传邮件正文、附件、JWT 或 163 授权码；仅同步邮件 ID、状态和当前邮件的结构化 AI 结果。</small></div><label>Cloudflare API 地址</label><input className="settings-input" value={apiBase} onChange={(e) => setApiBase(e.target.value)} placeholder="https://email.kodao.site" /><label>邮箱凭据 / JWT</label><input className="settings-input" type="password" value={credential} onChange={(e) => setCredential(e.target.value)} placeholder="凭据仅保存在 Windows Credential Manager" /><button className="compose-button connect-button" onClick={() => connectCloudflare()} disabled={loading}>{loading ? "连接中…" : "连接并同步收件箱"}</button><button className="outline-button ai-save" onClick={openCreateAddress} style={{ width: "100%" }}>＋ 创建临时邮箱地址</button><div className="ai-settings"><div className="settings-section-title">163 邮箱（IMAP/SMTP）</div><label>邮箱地址</label><input className="settings-input" value={neteaseEmail} onChange={(e) => setNeteaseEmail(e.target.value)} placeholder="you@163.com" /><label>客户端授权码</label><input className="settings-input" type="password" value={neteaseCode} onChange={(e) => setNeteaseCode(e.target.value)} placeholder="在 163 网页版「设置→客户端授权密码」获取" /><button className="compose-button connect-button" onClick={() => connectNetease()} disabled={loading}>{loading ? "连接中…" : "连接并同步 163"}</button><small className="settings-note ai-note">请先在 163 设置里开启 IMAP/SMTP 并生成授权码，使用授权码而不是网页登录密码。授权码仅保存在 Windows Credential Manager。</small></div><div className="settings-note">凭据通过 Tauri 存入 Windows Credential Manager，不会写入日志或同步到云端。</div></div></div>}
       {showCreate && <div className="modal-backdrop" onClick={() => setShowCreate(false)}><div className="modal" onClick={(e) => e.stopPropagation()}><div className="modal-header"><div><p className="eyebrow">临时邮箱</p><h2>创建临时邮箱地址</h2></div><button onClick={() => setShowCreate(false)}>×</button></div><label>用户名</label><input className="settings-input" value={tempName} onChange={(e) => setTempName(e.target.value.replace(/[^a-z0-9_.-]/gi, ""))} placeholder="自定义用户名（字母/数字）" /><label>域名</label>{availableDomains.length ? <select className="settings-input" value={tempDomain} onChange={(e) => setTempDomain(e.target.value)}>{availableDomains.map((d) => <option key={d} value={d}>{d}</option>)}</select> : <input className="settings-input" value={tempDomain} onChange={(e) => setTempDomain(e.target.value)} placeholder="mail.kodao.site" />}<div className="settings-note" style={{ minHeight: 24 }}>{tempName.trim() && tempDomain && <span>将创建：<strong>{tempName.trim()}@{tempDomain.replace(/^@/, "")}</strong></span>}</div><button className="compose-button connect-button" onClick={createTempMail} disabled={loading || !tempName.trim()}>{loading ? "创建中…" : "创建临时邮箱"}</button><small className="settings-note ai-note">创建后自动切换新地址并同步收件箱，JWT 会保存到 Windows Credential Manager。临时邮箱可用于接收验证码等一次性邮件。</small></div></div>}
       {showCompose && <div className="modal-backdrop" onClick={() => setShowCompose(false)}><div className="modal compose" onClick={(e) => e.stopPropagation()}><div className="modal-header"><div><p className="eyebrow">新邮件</p><h2>写邮件</h2></div><button onClick={() => setShowCompose(false)}>×</button></div><input value={composeTo} onChange={(e) => setComposeTo(e.target.value)} placeholder="收件人" /><input value={composeSubject} onChange={(e) => setComposeSubject(e.target.value)} placeholder="主题" /><textarea value={composeBody} onChange={(e) => setComposeBody(e.target.value)} placeholder="输入邮件内容…" rows={7} /><div className="compose-footer"><span>当前账户：{activeProvider === "163" ? (neteaseEmail.trim() || "163 邮箱") : cloudAddress}</span><button className="compose-button small" onClick={sendCompose}>发送</button></div></div></div>}
     </div>
