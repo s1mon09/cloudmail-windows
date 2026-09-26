@@ -60,16 +60,14 @@ fn imap_date_to_iso(raw: &str) -> String {
 fn decode_with_charset(bytes: &[u8], charset: &str) -> String {
     let label = charset.trim().to_ascii_lowercase();
     if label.contains("gb") || label.contains("18030") || label.contains("2312") {
-        let (decoded, _, _) = GB18030.decode(bytes);
-        decoded.into_owned()
+        GB18030.decode(bytes).0.into_owned()
     } else {
-        // 默认先按 UTF-8，若非法则退回 GB18030，最大限度避免乱码。
-        let (decoded, had_error, _) = UTF_8.decode(bytes);
-        if had_error {
-            let (gb, _, _) = GB18030.decode(bytes);
-            gb.into_owned()
+        // 默认先按 UTF-8，若出现替换字符则退回 GB18030，最大限度避免乱码。
+        let utf = UTF_8.decode(bytes).0;
+        if utf.chars().any(|c| c == '\u{FFFD}') {
+            GB18030.decode(bytes).0.into_owned()
         } else {
-            decoded.into_owned()
+            utf.into_owned()
         }
     }
 }
@@ -165,7 +163,7 @@ fn extract_first_text(raw: &[u8], boundary: &str, is_html: &mut bool) -> Vec<u8>
             }
         }
     }
-    if let Some((b, h)) = best_html {
+    if let Some((b, _h)) = best_html {
         *is_html = true;
         b
     } else if let Some((b, h)) = best_plain {
@@ -220,7 +218,7 @@ fn decode_mime_body(raw: &[u8]) -> (String, bool) {
         let compact: String = body_part.chars().filter(|c| !c.is_whitespace()).collect();
         base64::engine::general_purpose::STANDARD.decode(&compact).unwrap_or_default()
     } else if transfer.starts_with("quoted-printable") {
-        quoted_printable::decode(body_part.as_bytes())
+        quoted_printable::decode(body_part.as_bytes(), quoted_printable::ParseMode::Robust).unwrap_or_default()
     } else {
         body_part.as_bytes().to_vec()
     };
@@ -366,7 +364,7 @@ pub async fn netease_list_emails(email: String, code: String) -> Result<Vec<Imap
         FetchAttr::InternalDate,
     ];
     let fetched = conn
-        .fetch(&SequenceSet::new("1:*"), &items, TIMEOUT)
+        .fetch(&SequenceSet::new("1:*").unwrap(), &items, TIMEOUT)
         .await
         .map_err(|e| format!("读取邮件列表失败: {e}"))?;
     let mut list: Vec<ImapMailMeta> = fetched.iter().map(fetch_to_meta).collect();
@@ -409,7 +407,7 @@ pub async fn netease_search_emails(
             FetchAttr::InternalDate,
         ];
         let fetched = conn
-            .uid_fetch(&SequenceSet::new(uid_set), &items, TIMEOUT)
+            .uid_fetch(&SequenceSet::new(uid_set).unwrap(), &items, TIMEOUT)
             .await
             .map_err(|e| format!("读取搜索结果失败: {e}"))?;
         list = fetched.iter().map(fetch_to_meta).collect();
@@ -444,7 +442,7 @@ pub async fn netease_fetch_email(
         },
     ];
     let fetched = conn
-        .uid_fetch(&SequenceSet::new(uid.to_string()), &items, TIMEOUT)
+        .uid_fetch(&SequenceSet::new(uid.to_string()).unwrap(), &items, TIMEOUT)
         .await
         .map_err(|e| format!("读取邮件详情失败: {e}"))?;
     let f = fetched
@@ -503,7 +501,7 @@ pub async fn netease_mark_read(
         StoreOperation::Add
     };
     conn.uid_store(
-        &SequenceSet::new(uid.to_string()),
+        &SequenceSet::new(uid.to_string()).unwrap(),
         operation,
         &[Flag::Seen],
         None,
@@ -523,7 +521,7 @@ pub async fn netease_delete_email(email: String, code: String, uid: u32) -> Resu
         .await
         .map_err(|e| format!("打开收件箱失败: {e}"))?;
     conn.uid_store(
-        &SequenceSet::new(uid.to_string()),
+        &SequenceSet::new(uid.to_string()).unwrap(),
         StoreOperation::Add,
         &[Flag::Deleted],
         None,
