@@ -46,10 +46,10 @@ src-tauri/target/release/bundle/
 ## 下一阶段
 
 1. 对 `mail.kodao.site` 实际接口做登录、收件箱、邮件详情和附件适配。
-2. 增加 163 IMAP/SMTP 适配器，使用客户端授权码而不是网页登录密码。
-3. 将凭据保存到 Windows Credential Manager，禁止写入日志。
+2. ~~增加 163 IMAP/SMTP 适配器~~（已实现：`imap.163.com` 收信、`smtp.163.com` 发信）。
+3. ~~将凭据保存到 Windows Credential Manager~~（已实现：Cloudflare 凭据与 163 授权码均经 Tauri 存入系统凭据库）。
 4. 增加本地 SQLite 索引、增量同步和离线缓存。
-5. 把验证码解析从演示数据切换为服务端字段优先、客户端规则兜底。
+5. 把验证码解析从演示数据切换为服务端字段优先、客户端规则兜底；163 侧解析正文中的验证码。
 
 ## Linux 沙箱限制
 
@@ -107,6 +107,7 @@ Cloudflare 临时邮箱适配器已根据上游前端和文档实现以下调用
 - 优先使用服务端解析字段，客户端本地识别验证码并提供复制。
 - 通过 `/api/send_mail` 发送纯文本邮件。
 - 阅读区上一封、下一封、删除、标记未读、星标和更多操作按钮均已接入交互；星标目前保存在当前客户端会话中，上游暂未提供星标字段。
+- **163 邮箱（原生 IMAP/SMTP）**：在设置里填入 163 邮箱和客户端授权码后即可连接，通过 `imap.163.com` 收信、`smtp.163.com` 发信；支持列表、按需读取正文、标记已读/未读、删除、发送。授权码只保存到 Windows Credential Manager。
 
 前端验证命令为 `pnpm build`。Windows 原生 Rust 检查应在安装 Rust、Windows SDK 和 WebView2 的 Windows runner 上执行；GitHub Actions 工作流会在 Windows 环境中完成打包验证。
 

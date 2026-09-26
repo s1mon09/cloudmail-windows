@@ -1,5 +1,7 @@
 use keyring::Entry;
 
+mod email;
+
 const SERVICE: &str = "site.kodao.cloudmail";
 
 fn validate_account(account: &str) -> Result<(), String> {
@@ -45,7 +47,16 @@ fn delete_secret(account: String) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![save_secret, get_secret, delete_secret])
+        .invoke_handler(tauri::generate_handler![
+            save_secret,
+            get_secret,
+            delete_secret,
+            email::netease_list_emails,
+            email::netease_fetch_email,
+            email::netease_mark_read,
+            email::netease_delete_email,
+            email::netease_send_mail
+        ])
         .run(tauri::generate_context!())
         .expect("error while running CloudMail");
 }
