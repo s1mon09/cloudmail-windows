@@ -77,3 +77,9 @@ CloudMail 应直接根据本地 `cloudflare_temp_email` 源码修正 API 客户�
 CloudMail 保留现有 `cloudflare_temp_email` 作为临时邮箱服务，但不再部署额外 Cloudflare 网关或云端 AI。邮件分析使用本机 OpenAI 兼容接口，默认 `http://localhost:8000/v1`，邮件正文不会上传到云端 AI 服务。
 
 Cloudflare 官方文档确认 Email Routing 可将来信交给 Worker，Email Sending 可通过 Worker `EMAIL` binding、REST API 或 authenticated SMTP 发信；这些功能不提供对 163 邮箱的 IMAP 访问，因此 163 仍需客户端内置 `async-imap`/`lettre` 方案。
+
+## 2026-09-26 本地 AI 提示词优化
+
+本轮参考 [Intelligent-Email-Assistant](https://github.com/Nidhish-Balasubramanya/Intelligent-Email-Assistant) 的可配置摘要/分类/行动项思路、[LLM-Based Phishing Email Detection](https://github.com/tkoide398/large-language-model-based-phishing-email-detection) 的邮件规范化与证据化风险判断、[email-agent-core](https://github.com/pguso/email-agent-core) 的结构化分类字段、[RAGmail](https://github.com/0xfe/ragmail) 的本地隐私边界，以及 [Microsoft Defender 的邮件提示注入防护说明](https://github.com/MicrosoftDocs/defender-docs/blob/public/defender-office-365/step-by-step-guides/prompt-injection-protection-defender-for-office-365.md)。
+
+CloudMail 的提示词现在固定输出摘要、验证码、关键链接、风险等级、风险依据、建议和置信度；邮件正文用 `<email_content>` 分隔，明确禁止执行邮件中的指令。模型温度调整为 0.1，正文截断为 12,000 字符，适合 Qwen 本地模型稳定输出。

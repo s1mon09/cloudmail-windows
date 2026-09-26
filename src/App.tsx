@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { CloudflareClient, normalizeCloudflareMail, type ParsedMail } from "./api/cloudflare";
 import { findOtpCandidates } from "./api/otp";
 import { LocalAiClient } from "./api/local-ai";
+import { MAIL_ANALYSIS_SYSTEM_PROMPT, buildMailAnalysisPrompt } from "./api/ai-prompts";
 import "./App.css";
 
 type Mail = {
@@ -345,17 +346,10 @@ function App() {
     setAiLoading(true);
     setAiAnalysis("");
     try {
-      const content = [
-        `发件人：${activeMail.sender} <${activeMail.address}>`,
-        `主题：${activeMail.subject}`,
-        `时间：${activeMail.time}`,
-        `正文：${activeMail.body || activeMail.preview}`,
-        activeMail.otp ? `检测到验证码：${activeMail.otp}` : "",
-      ].filter(Boolean).join("\n");
       const result = await new LocalAiClient({ baseUrl: aiBaseUrl, model: aiModel }).chat([
-        { role: "system", content: "你是 CloudMail 的本地邮件分析助手。请用简体中文，简洁回答：1.邮件摘要 2.验证码或关键链接 3.是否可能是钓鱼/风险邮件 4.建议操作。不要编造邮件中不存在的信息。" },
-        { role: "user", content },
-      ]);
+        { role: "system", content: MAIL_ANALYSIS_SYSTEM_PROMPT },
+        { role: "user", content: buildMailAnalysisPrompt({ sender: activeMail.sender, address: activeMail.address, subject: activeMail.subject, time: activeMail.time, body: activeMail.body || activeMail.preview, otp: activeMail.otp }) },
+      ], { temperature: 0.1, maxTokens: 600 });
       setAiAnalysis(result);
       setActionStatus("本地 AI 分析完成");
     } catch (error) {
