@@ -235,8 +235,8 @@ pub async fn netease_send_mail(
             .parse::<lettre::Address>()
             .map_err(|e| format!("收件人地址无效: {e}"))?;
         let message = Message::builder()
-            .from(lettre::Mailbox::new(None, from_addr))
-            .to(lettre::Mailbox::new(None, to_addr))
+            .from(lettre::address::Mailbox::new(None, from_addr))
+            .to(lettre::address::Mailbox::new(None, to_addr))
             .subject(subject)
             .body(content)
             .map_err(|e| format!("构建邮件失败: {e}"))?;
