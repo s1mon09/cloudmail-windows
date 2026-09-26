@@ -19,23 +19,25 @@ export class LocalAiError extends Error {
 export class LocalAiClient {
   constructor(private config: LocalAiConfig) {}
 
-  async chat(messages: LocalAiMessage[], options: { temperature?: number; maxTokens?: number } = {}) {
+  async chat(messages: LocalAiMessage[], options: { temperature?: number; maxTokens?: number; json?: boolean; responseFormat?: Record<string, unknown> } = {}) {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 60_000);
     const headers = new Headers({ "Content-Type": "application/json" });
     if (this.config.apiKey?.trim()) headers.set("Authorization", `Bearer ${this.config.apiKey.trim()}`);
+    const body: Record<string, unknown> = {
+      model: this.config.model,
+      messages,
+      temperature: options.temperature ?? 0.2,
+      max_tokens: options.maxTokens ?? 512,
+      stream: false,
+    };
+    if (options.json || options.responseFormat) body.response_format = options.responseFormat ?? { type: "json_object" };
     try {
       const response = await fetch(`${this.config.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
         method: "POST",
         headers,
         signal: controller.signal,
-        body: JSON.stringify({
-          model: this.config.model,
-          messages,
-          temperature: options.temperature ?? 0.2,
-          max_tokens: options.maxTokens ?? 512,
-          stream: false,
-        }),
+        body: JSON.stringify(body),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
