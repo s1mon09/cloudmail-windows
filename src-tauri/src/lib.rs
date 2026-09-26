@@ -52,6 +52,7 @@ pub fn run() {
             get_secret,
             delete_secret,
             email::netease_list_emails,
+            email::netease_search_emails,
             email::netease_fetch_email,
             email::netease_mark_read,
             email::netease_delete_email,

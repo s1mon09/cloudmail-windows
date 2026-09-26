@@ -83,3 +83,9 @@ Cloudflare 官方文档确认 Email Routing 可将来信交给 Worker，Email Se
 本轮参考 [Intelligent-Email-Assistant](https://github.com/Nidhish-Balasubramanya/Intelligent-Email-Assistant) 的可配置摘要/分类/行动项思路、[LLM-Based Phishing Email Detection](https://github.com/tkoide398/large-language-model-based-phishing-email-detection) 的邮件规范化与证据化风险判断、[email-agent-core](https://github.com/pguso/email-agent-core) 的结构化分类字段、[RAGmail](https://github.com/0xfe/ragmail) 的本地隐私边界，以及 [Microsoft Defender 的邮件提示注入防护说明](https://github.com/MicrosoftDocs/defender-docs/blob/public/defender-office-365/step-by-step-guides/prompt-injection-protection-defender-for-office-365.md)。
 
 CloudMail 的提示词现在固定输出摘要、验证码、关键链接、风险等级、风险依据、建议和置信度；邮件正文用 `<email_content>` 分隔，明确禁止执行邮件中的指令。模型温度调整为 0.1，正文截断为 12,000 字符，适合 Qwen 本地模型稳定输出。
+
+## 2026-09-26 原生 Windows 与网易邮箱优化
+
+针对 163 邮箱，参考了 [async-imap](https://github.com/chatmail/async-imap) 的 IMAP 搜索/UID/状态管理能力、[io-email](https://github.com/pimalaya/io-email) 的统一邮件模型、[netease-youdao/lobsterai 的 IMAP/SMTP 文档](https://github.com/netease-youdao/lobsterai/blob/main/SKILLs/imap-smtp-email/SKILL.md) 的 163 授权码和服务器配置，以及网易官方的 [Unsafe Login 说明](https://help.mail.163.com/faqDetail.do?code=d7a5dc8471cd0c0e8b4b8f4f8e49998b374173cfe9171305fa1ce630d7f67ac2eda07326646e6eb0)。
+
+本轮保留 Windows 原生 Tauri + Rust 作为主力，并增加 163 服务端搜索：输入关键词后按 Enter 会执行 IMAP `OR SUBJECT / FROM` 搜索，而不是只过滤当前已加载的邮件。登录错误会专门识别 `Unsafe Login`，给出开启 IMAP/SMTP、使用授权码和客户端身份兼容性的诊断提示。未直接复制 GPL 代码；`async-imap` 与 `io-email` 仅作为协议和统一模型参考。

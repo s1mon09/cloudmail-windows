@@ -63,7 +63,14 @@ fn open_imap(email: &str, code: &str) -> Result<ImapSession, String> {
         .map_err(|e| format!("连接 {IMAP_HOST} 失败: {e}"))?;
     client
         .login(email, code)
-        .map_err(|(e, _)| format!("163 登录失败（请确认已开启 IMAP/SMTP 且授权码正确）: {e}"))
+        .map_err(|(e, _)| {
+            let detail = e.to_string();
+            if detail.to_ascii_lowercase().contains("unsafe login") {
+                "163 拒绝连接：Unsafe Login。请在网易邮箱网页版开启 IMAP/SMTP，并确认客户端授权码有效；当前 rust-imap 版本不支持网易要求的 ID 扩展。".to_string()
+            } else {
+                format!("163 登录失败（请确认已开启 IMAP/SMTP 且授权码正确）: {detail}")
+            }
+        })
 }
 
 fn flags_unread(flags: &[imap::types::Flag]) -> bool {
@@ -127,6 +134,32 @@ pub async fn netease_list_emails(email: String, code: String) -> Result<Vec<Imap
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// 在 163 收件箱执行服务端搜索，避免只搜索当前已经加载的列表。
+#[tauri::command]
+pub async fn netease_search_emails(email: String, code: String, query: String) -> Result<Vec<ImapMailMeta>, String> {
+    let query = query.trim().chars().take(120).collect::<String>();
+    if query.is_empty() {
+        return netease_list_emails(email, code).await;
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut session = open_imap(&email, &code)?;
+        session.select("INBOX").map_err(|e| format!("打开收件箱失败: {e}"))?;
+        let escaped = query.replace('"', "");
+        let criteria = format!("OR SUBJECT \"{escaped}\" FROM \"{escaped}\"");
+        let uids = session.search(criteria).map_err(|e| format!("网易邮箱搜索失败: {e}"))?;
+        if uids.is_empty() {
+            let _ = session.logout();
+            return Ok(Vec::new());
+        }
+        let uid_set = uids.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
+        let fetched = session.uid_fetch(&uid_set, "(UID ENVELOPE FLAGS INTERNALDATE)").map_err(|e| format!("读取搜索结果失败: {e}"))?;
+        let mut list: Vec<ImapMailMeta> = fetched.iter().map(fetch_to_meta).collect();
+        list.sort_by(|a, b| b.id.cmp(&a.id));
+        let _ = session.logout();
+        Ok(list)
+    }).await.map_err(|e| e.to_string())?
 }
 
 /// 按 UID 拉取单封邮件正文（不标记已读）。

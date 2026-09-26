@@ -166,3 +166,11 @@ CloudMail 现在采用响应式手机网页方案，不单独维护 Expo 原生�
 仓库新增 `cloudflare-sync/` Worker + D1 同步骨架。它只同步账户引用、邮件 ID、已读状态、星标状态和可选的结构化 AI 结果，不上传邮箱 JWT、163 授权码、原始正文或附件。手机网页和 Windows 客户端可以使用同一个 Worker 地址和同步令牌。
 
 云同步是可选的，设置页中手动填写 Worker 地址后，点击“同步已读、星标和 AI 结果”。同步令牌只保存在当前浏览器会话；生产环境建议改为每个用户独立的短期令牌，不要使用全局固定令牌。
+
+## 原生 Windows 与网易邮箱增强
+
+Windows 版本继续作为主力原生客户端，使用 Tauri 2 + Rust。163 邮箱使用 `imap.163.com:993` 收信和 `smtp.163.com:465` 发信，必须在网易网页版开启 IMAP/SMTP，并使用客户端授权码而不是网页登录密码。当前支持 163 收件箱刷新、按需读取正文、自动标记已读、手动标记未读、删除、纯文本发信和服务端搜索。
+
+在 163 邮箱账户下，搜索框输入关键词并按 Enter 会调用 IMAP `OR SUBJECT / FROM` 服务端搜索，适用于不在当前已加载列表中的历史邮件。若遇到 `Unsafe Login`，客户端现在会给出针对网易协议设置的诊断提示。网易服务端可能要求客户端身份声明；项目已记录该兼容性限制，后续可升级到支持 RFC 2971 ID 扩展的 IMAP 实现。
+
+本轮检索参考了 [async-imap](https://github.com/chatmail/async-imap)、[io-email](https://github.com/pimalaya/io-email) 和 [LobsterAI IMAP/SMTP 文档](https://github.com/netease-youdao/lobsterai/blob/main/SKILLs/imap-smtp-email/SKILL.md)，没有复制 GPL 代码。

@@ -189,6 +189,17 @@ function App() {
   };
 
   const refreshInbox = async () => {
+    if (activeProvider === "163") {
+      if (!neteaseEmail.trim() || !neteaseCode.trim()) { setShowSettings(true); return; }
+      setLoading(true); setActionStatus("");
+      try {
+        const metas = await invoke<Array<{ id: number; subject: string; sender: string; date: string; unread: boolean }>>("netease_list_emails", { email: neteaseEmail.trim(), code: neteaseCode.trim() });
+        setNeteaseMails(metas.map(toNeteaseMail));
+        setActionStatus(`已更新 163 邮箱 ${metas.length} 封邮件`);
+      } catch (error) { setActionStatus(error instanceof Error ? error.message : "163 刷新失败"); }
+      finally { setLoading(false); }
+      return;
+    }
     if (!client) { setShowSettings(true); return; }
     setLoading(true); setActionStatus("");
     try {
@@ -198,6 +209,18 @@ function App() {
       setMailPage(1);
       setActionStatus(`已更新 ${result.results.length} 封邮件`);
     } catch (error) { setActionStatus(error instanceof Error ? error.message : "刷新失败"); }
+    finally { setLoading(false); }
+  };
+
+  const searchCurrentMailbox = async () => {
+    if (activeProvider !== "163") { setActionStatus("临时邮箱搜索已在当前已加载邮件中完成"); return; }
+    if (!neteaseEmail.trim() || !neteaseCode.trim()) { setActionStatus("请先连接 163 邮箱"); return; }
+    setLoading(true);
+    try {
+      const result = await invoke<Array<{ id: number; subject: string; sender: string; date: string; unread: boolean }>>("netease_search_emails", { email: neteaseEmail.trim(), code: neteaseCode.trim(), query });
+      setNeteaseMails(result.map(toNeteaseMail));
+      setActionStatus(result.length ? `网易邮箱找到 ${result.length} 封邮件` : "网易邮箱没有找到匹配邮件");
+    } catch (error) { setActionStatus(error instanceof Error ? error.message : "网易邮箱搜索失败"); }
     finally { setLoading(false); }
   };
 
@@ -416,7 +439,7 @@ function App() {
         </aside>
         <main className="mail-list-panel">
           <div className="panel-heading"><div><p className="eyebrow">{folder}</p><h1>{folder === "验证码" ? "验证码" : "收件箱"} <span>{sourceMails.length}{mailTotal > sourceMails.length && ` / ${mailTotal}`}</span></h1></div><button className="refresh-button" onClick={refreshInbox} disabled={loading} title="刷新收件箱">{loading ? "…" : "↻"}</button></div>
-          <div className="search-box"><span>⌕</span><input ref={searchInputRef} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索邮件、发件人或验证码" /><kbd>Ctrl K</kbd></div>
+          <div className="search-box"><span>⌕</span><input ref={searchInputRef} value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void searchCurrentMailbox(); }} placeholder="搜索邮件、发件人或验证码" /><kbd>Ctrl K</kbd></div>
           <div className="filter-row"><button className={`filter ${filter === "all" ? "active" : ""}`} onClick={() => setFilter("all")}>全部</button><button className={`filter ${filter === "unread" ? "active" : ""}`} onClick={() => setFilter("unread")}>未读</button><button className={`filter ${filter === "attachments" ? "active" : ""}`} onClick={() => setFilter("attachments")}>带附件</button><button className={`filter otp-filter ${filter === "otp" ? "active" : ""}`} onClick={() => setFilter("otp")}>验证码 <span>{sourceMails.filter((mail) => mail.otp).length}</span></button></div>
           <div className="mail-list">{visibleMails.length ? visibleMails.map((mail) => <button key={mail.id} onClick={() => openMail(mail)} className={`mail-row ${selected === mail.id ? "selected" : ""}`}><div className="sender-avatar" style={{ background: mail.color }}>{mail.sender.slice(0, 1)}</div><div className="mail-copy"><div className="mail-meta"><strong>{mail.sender}</strong><time>{mail.time}</time></div><div className="subject">{mail.subject} {mail.tag && <span className="tag">{mail.tag}</span>}</div><p>{mail.preview}</p></div>{starredIds.has(mail.id) && <span className="row-star">★</span>}{mail.unread && <i className="unread-dot" />}</button>) : <div className="empty-state"><div className="empty-icon">⌕</div><strong>没有找到邮件</strong><span>试试更换筛选条件或搜索关键词</span><button onClick={() => { setQuery(""); setFilter("all"); setFolder("收件箱"); }}>清除筛选</button></div>}{activeProvider === "cloudflare" && client && sourceMails.length < mailTotal && <button className="load-more" onClick={loadMore} disabled={loadingMore}>{loadingMore ? "加载中…" : `加载更多（剩余 ${mailTotal - sourceMails.length} 封）`}</button>}</div>
         </main>
