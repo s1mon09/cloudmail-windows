@@ -19,7 +19,7 @@ const IMAP_HOST: &str = "imap.163.com";
 const IMAP_PORT: u16 = 993;
 const SMTP_HOST: &str = "smtp.163.com";
 const TIMEOUT: Duration = Duration::from_secs(30);
-const CLIENT_VERSION: &str = "0.1.8";
+const CLIENT_VERSION: &str = "0.1.9";
 
 // 将 IMAP INTERNALDATE（如 "17-Jul-1996 02:44:25 -0700"）转为含时区的 ISO 串
 // （如 "1996-07-17T02:44:25-07:00"），以保持前端 date.replace("T"," ").slice(5,16) 的展示格式。
