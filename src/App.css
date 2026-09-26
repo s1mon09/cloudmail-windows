@@ -28,3 +28,5 @@
 
 .sync-settings .ai-save{width:100%;margin:0}.sync-settings .ai-save:disabled{opacity:.5;cursor:wait}
 @media(max-width:650px){.sync-settings{margin-top:12px}.settings-note{font-size:9px}}
+
+.ai-presets{display:flex;gap:6px;margin:-2px 0 12px}.ai-presets .outline-button{flex:1;margin:0;padding:7px 5px;font-size:9px}.ai-presets .outline-button:hover{border-color:#d97757;color:#e0a98f}

@@ -174,3 +174,13 @@ Windows 版本继续作为主力原生客户端，使用 Tauri 2 + Rust。163 �
 在 163 邮箱账户下，搜索框输入关键词并按 Enter 会调用 IMAP `OR SUBJECT / FROM` 服务端搜索，适用于不在当前已加载列表中的历史邮件。若遇到 `Unsafe Login`，客户端现在会给出针对网易协议设置的诊断提示。网易服务端可能要求客户端身份声明；项目已记录该兼容性限制，后续可升级到支持 RFC 2971 ID 扩展的 IMAP 实现。
 
 本轮检索参考了 [async-imap](https://github.com/chatmail/async-imap)、[io-email](https://github.com/pimalaya/io-email) 和 [LobsterAI IMAP/SMTP 文档](https://github.com/netease-youdao/lobsterai/blob/main/SKILLs/imap-smtp-email/SKILL.md)，没有复制 GPL 代码。
+
+## 云端 AI 与 OpenAI 兼容接口
+
+AI 邮件分析现在支持本地和云端两种模式，统一使用 OpenAI Chat Completions 格式。设置页提供快速预设：
+
+- 本地 Qwen：`http://localhost:8000/v1` / `Qwen3.5-9B-AWQ`
+- 智谱 GLM：`https://open.bigmodel.cn/api/paas/v4` / `glm-5.3`
+- OpenAI：`https://api.openai.com/v1` / `gpt-4o-mini`
+
+也可以手动填写其他兼容 `/chat/completions` 的服务地址和模型名称。云端 API Key 通过 Windows Credential Manager 保存，不写入源码、localStorage 或日志；本地模型可以不填写 API Key。使用云端模型时，邮件正文会发送给对应的第三方模型服务，请根据邮件敏感程度选择本地模型或可信云端服务。

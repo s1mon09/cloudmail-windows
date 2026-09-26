@@ -11,7 +11,7 @@ export type LocalAiMessage = {
 
 export class LocalAiError extends Error {
   constructor(public status: number, message: string) {
-    super(`[本地 AI ${status}] ${message}`);
+    super(`[AI ${status}] ${message}`);
     this.name = "LocalAiError";
   }
 }
@@ -49,7 +49,7 @@ export class LocalAiClient {
       return content.trim();
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
-        throw new LocalAiError(408, "分析超时，请检查本地模型是否正在运行");
+        throw new LocalAiError(408, "分析超时，请检查模型服务地址、网络和 API Key");
       }
       throw error;
     } finally {

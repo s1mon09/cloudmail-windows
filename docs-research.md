@@ -89,3 +89,9 @@ CloudMail 的提示词现在固定输出摘要、验证码、关键链接、风�
 针对 163 邮箱，参考了 [async-imap](https://github.com/chatmail/async-imap) 的 IMAP 搜索/UID/状态管理能力、[io-email](https://github.com/pimalaya/io-email) 的统一邮件模型、[netease-youdao/lobsterai 的 IMAP/SMTP 文档](https://github.com/netease-youdao/lobsterai/blob/main/SKILLs/imap-smtp-email/SKILL.md) 的 163 授权码和服务器配置，以及网易官方的 [Unsafe Login 说明](https://help.mail.163.com/faqDetail.do?code=d7a5dc8471cd0c0e8b4b8f4f8e49998b374173cfe9171305fa1ce630d7f67ac2eda07326646e6eb0)。
 
 本轮保留 Windows 原生 Tauri + Rust 作为主力，并增加 163 服务端搜索：输入关键词后按 Enter 会执行 IMAP `OR SUBJECT / FROM` 搜索，而不是只过滤当前已加载的邮件。登录错误会专门识别 `Unsafe Login`，给出开启 IMAP/SMTP、使用授权码和客户端身份兼容性的诊断提示。未直接复制 GPL 代码；`async-imap` 与 `io-email` 仅作为协议和统一模型参考。
+
+## 2026-09-26 云端 OpenAI 兼容 AI
+
+参考智谱官方 OpenAI 兼容文档：[智谱 OpenAI 兼容接口](https://docs.bigmodel.cn/cn/guide/develop/openai/introduction)。客户端统一调用 `/chat/completions`，因此可切换本地 Qwen、智谱 GLM、OpenAI 或其他兼容服务。内置预设使用智谱地址 `https://open.bigmodel.cn/api/paas/v4` 与官方文档示例模型 `glm-5.3`，OpenAI 预设使用 `https://api.openai.com/v1` 与 `gpt-4o-mini`。
+
+云端 API Key 不写入 localStorage、源码或日志；Windows 原生版本通过 Tauri 的 Windows Credential Manager 保存。网页端如果使用云端 Key，应继续使用会话级存储或改为后端代理，不建议长期存放在浏览器 localStorage。
