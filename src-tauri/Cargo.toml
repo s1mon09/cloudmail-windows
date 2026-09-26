@@ -26,6 +26,9 @@ keyring = { version = "3.6", features = ["windows-native"] }
 daaki-imap = "0.2"
 native-tls = "0.2"
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "native-tls", "hostname"] }
+base64 = "0.22"
+encoding_rs = "0.8"
+quoted_printable = "0.5"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

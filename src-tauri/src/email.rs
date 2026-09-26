@@ -10,6 +10,8 @@ use serde::Serialize;
 
 use daaki_imap::{Envelope, EnvelopeAddress, FetchAttr, Flag, ImapConnection, SequenceSet, StoreOperation, TlsMode};
 
+use base64::Engine as _;
+use encoding_rs::{GB18030, UTF_8};
 use lettre::transport::smtp::authentication::{Credentials, Mechanism};
 use lettre::{Message, SmtpTransport, Transport};
 
@@ -17,7 +19,7 @@ const IMAP_HOST: &str = "imap.163.com";
 const IMAP_PORT: u16 = 993;
 const SMTP_HOST: &str = "smtp.163.com";
 const TIMEOUT: Duration = Duration::from_secs(30);
-const CLIENT_VERSION: &str = "0.1.7";
+const CLIENT_VERSION: &str = "0.1.8";
 
 // 将 IMAP INTERNALDATE（如 "17-Jul-1996 02:44:25 -0700"）转为含时区的 ISO 串
 // （如 "1996-07-17T02:44:25-07:00"），以保持前端 date.replace("T"," ").slice(5,16) 的展示格式。
@@ -50,6 +52,205 @@ fn imap_date_to_iso(raw: &str) -> String {
         None => "Z".to_string(),
     };
     format!("{yyyy}-{mm}-{dd}T{time_part}{zone_str}")
+}
+
+// ---------- 编码解码：163 邮件普遍使用 GBK/GB18030 + base64/quoted-printable ----------
+
+/// 按 charset 把字节解码为 UTF-8 字符串。GB 系列统一走 GB18030（兼容 GBK/GB2312）。
+fn decode_with_charset(bytes: &[u8], charset: &str) -> String {
+    let label = charset.trim().to_ascii_lowercase();
+    if label.contains("gb") || label.contains("18030") || label.contains("2312") {
+        let (decoded, _, _) = GB18030.decode(bytes);
+        decoded.into_owned()
+    } else {
+        // 默认先按 UTF-8，若非法则退回 GB18030，最大限度避免乱码。
+        let (decoded, had_error, _) = UTF_8.decode(bytes);
+        if had_error {
+            let (gb, _, _) = GB18030.decode(bytes);
+            gb.into_owned()
+        } else {
+            decoded.into_owned()
+        }
+    }
+}
+
+/// 解码 RFC2047 的 Q 编码字（`_`=空格，`=XX`=字节）。
+fn decode_qp_word(data: &str) -> Vec<u8> {
+    let bytes = data.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'=' && i + 2 < bytes.len() && bytes[i + 1].is_ascii_hexdigit() && bytes[i + 2].is_ascii_hexdigit() {
+            if let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 3]) {
+                if let Ok(v) = u8::from_str_radix(hex, 16) { out.push(v); }
+            }
+            i += 3;
+        } else if b == b'_' {
+            out.push(b' ');
+            i += 1;
+        } else {
+            out.push(b);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// 解码一个 RFC2047 编码词 `=?charset?B|Q?data?=`。
+fn decode_rfc2047_word(raw: &str) -> String {
+    if !raw.contains("=?") || !raw.contains("?=") {
+        return raw.to_string();
+    }
+    let mut out = String::new();
+    let mut rest = raw;
+    while let Some(start) = rest.find("=?") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        // charset?B?data? 或 charset?Q?data?
+        let Some(sep1) = after.find('?') else {
+            out.push_str("=?");
+            rest = after;
+            continue;
+        };
+        let charset = &after[..sep1];
+        let tail = &after[sep1 + 1..];
+        let Some(sep2) = tail.find('?') else {
+            out.push_str("=?");
+            rest = after;
+            continue;
+        };
+        let enc = &tail[..sep2];
+        let tail2 = &tail[sep2 + 1..];
+        let Some(end) = tail2.find("?=") else {
+            out.push_str("=?");
+            rest = after;
+            continue;
+        };
+        let data = &tail2[..end];
+        if enc.eq_ignore_ascii_case("B") {
+            let bytes = base64::engine::general_purpose::STANDARD.decode(data.trim()).unwrap_or_default();
+            out.push_str(&decode_with_charset(&bytes, charset));
+        } else {
+            out.push_str(&decode_with_charset(&decode_qp_word(data), charset));
+        }
+        rest = &tail2[end + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// 解析出第一个 text/plain 或 text/html 子部分正文（用于 multipart 邮件）。
+fn extract_first_text(raw: &[u8], boundary: &str, is_html: &mut bool) -> Vec<u8> {
+    let text = String::from_utf8_lossy(raw);
+    let marker = format!("--{boundary}");
+    let mut best_plain: Option<(Vec<u8>, bool)> = None;
+    let mut best_html: Option<(Vec<u8>, bool)> = None;
+    for part in text.split(&marker) {
+        let p = part.trim_start();
+        let low = p.to_ascii_lowercase();
+        let html_part = low.contains("text/html") || low.contains("<html") || low.contains("<!doctype");
+        let plain_part = low.contains("text/plain") || low.contains("text/x-mail") || (!low.contains("content-type:") && !html_part);
+        let body = p.split_once("\r\n\r\n").or_else(|| p.split_once("\n\n")).map(|(_, b)| b);
+        if !html_part && !plain_part {
+            continue;
+        }
+        if let Some(body) = body {
+            let bytes = body.trim().as_bytes().to_vec();
+            if html_part {
+                best_html = Some((bytes, true));
+                break;
+            } else if best_plain.is_none() {
+                best_plain = Some((bytes, false));
+            }
+        }
+    }
+    if let Some((b, h)) = best_html {
+        *is_html = true;
+        b
+    } else if let Some((b, h)) = best_plain {
+        *is_html = h;
+        b
+    } else {
+        raw.to_vec()
+    }
+}
+
+/// 解码 MIME 正文：处理 base64 / quoted-printable 传输编码、GBK/UTF-8 字符集，
+/// 并识别 multipart 邮件，返回 `(解码后的 UTF-8 文本, 是否为 HTML)`。
+fn decode_mime_body(raw: &[u8]) -> (String, bool) {
+    let raw_text = String::from_utf8_lossy(raw);
+    // 先分离 MIME 头与正文：正文从首个空行之后开始（拉取的是含头的完整邮件）。
+    let (header_part, body_part) = match raw_text.find("\r\n\r\n").map(|i| (i, 4))
+        .or_else(|| raw_text.find("\r\n\n").map(|i| (i, 3)))
+        .or_else(|| raw_text.find("\n\n").map(|i| (i, 2)))
+    {
+        Some((idx, off)) => (&raw_text[..idx], &raw_text[idx + off..]),
+        None => ("", &raw_text[..]),
+    };
+
+    let mut transfer = String::new();
+    let mut charset = String::new();
+    let mut boundary: Option<String> = None;
+    for line in header_part.lines().take(60) {
+        let low = line.trim_start().to_ascii_lowercase();
+        if low.starts_with("content-transfer-encoding:") {
+            transfer = low["content-transfer-encoding:".len()..].trim().to_string();
+        } else if low.starts_with("content-type:") {
+            if let Some(ci) = low.find("charset=") {
+                let val: String = low[ci + 8..].trim()
+                    .trim_matches('"').trim_matches('\'')
+                    .chars().take_while(|c| *c != ';' && *c != ' ' && *c != '\r' && *c != '\n')
+                    .collect();
+                if !val.is_empty() { charset = val; }
+            }
+            if low.contains("boundary=") && boundary.is_none() {
+                if let Some(b) = low.split("boundary=").nth(1) {
+                    let b: String = b.trim().trim_matches('"')
+                        .chars().take_while(|c| *c != ';' && *c != ' ' && *c != '\r' && *c != '\n')
+                        .collect();
+                    if !b.is_empty() { boundary = Some(b); }
+                }
+            }
+        }
+    }
+
+    // 依据传输编码还原正文原始字节（仅处理正文部分，头部不参与解码）。
+    let mut payload: Vec<u8> = if transfer.starts_with("base64") {
+        let compact: String = body_part.chars().filter(|c| !c.is_whitespace()).collect();
+        base64::engine::general_purpose::STANDARD.decode(&compact).unwrap_or_default()
+    } else if transfer.starts_with("quoted-printable") {
+        quoted_printable::decode(body_part.as_bytes())
+    } else {
+        body_part.as_bytes().to_vec()
+    };
+
+    // multipart：优先提取 text/plain 或 text/html 子部分。
+    let mut is_html = false;
+    if let Some(boundary) = boundary {
+        if !boundary.is_empty() {
+            payload = extract_first_text(&payload, &boundary, &mut is_html);
+        }
+    }
+    // 提取出的子部分自身可能仍是 base64（嵌套传输编码），自动尝试还原一次。
+    if !payload.is_empty() {
+        let compact: String = String::from_utf8_lossy(&payload).chars().filter(|c| !c.is_whitespace()).collect();
+        if compact.len() >= 8
+            && compact.len() % 4 == 0
+            && compact.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '='))
+        {
+            if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(&compact) {
+                if !decoded.is_empty() {
+                    payload = decoded;
+                }
+            }
+        }
+    }
+    if !is_html {
+        let low = String::from_utf8_lossy(&payload).to_ascii_lowercase();
+        is_html = low.contains("<html") || low.contains("<body") || low.contains("<!doctype") || low.contains("</div>") || low.contains("<p>");
+    }
+    (decode_with_charset(&payload, &charset), is_html)
 }
 
 /// 打开一条 163 IMAP 连接并登录，随后发送 ID 扩展（RFC 2971）。
@@ -87,7 +288,7 @@ fn sender_from(from: &[EnvelopeAddress]) -> String {
     match from.first() {
         None => "未知发件人".to_string(),
         Some(a) => {
-            let name = a.name.as_deref().unwrap_or("").trim().to_string();
+            let name = decode_rfc2047_word(a.name.as_deref().unwrap_or("").trim()).trim().to_string();
             let mailbox = a.mailbox.as_deref().unwrap_or("").to_string();
             let host = a.host.as_deref().unwrap_or("").to_string();
             if name.is_empty() {
@@ -100,7 +301,7 @@ fn sender_from(from: &[EnvelopeAddress]) -> String {
 }
 
 fn envelope_meta(env: &Envelope) -> (String, String) {
-    let subject = env.subject.as_deref().unwrap_or("").trim().to_string();
+    let subject = decode_rfc2047_word(env.subject.as_deref().unwrap_or("").trim()).trim().to_string();
     (subject, sender_from(&env.from))
 }
 
@@ -144,7 +345,12 @@ pub struct ImapMailDetail {
     pub date: String,
     pub unread: bool,
     pub body: String,
+    /// 正文是否为 HTML（前端据此选择渲染方式）。
+    pub html: bool,
 }
+
+/// 列表最大返回条数。163 收件箱可能非常大，仅拉取最近的邮件以控制体积与耗时。
+const MAX_LIST: usize = 60;
 
 /// 列出收件箱邮件（仅元数据）。
 #[tauri::command]
@@ -163,7 +369,10 @@ pub async fn netease_list_emails(email: String, code: String) -> Result<Vec<Imap
         .fetch(&SequenceSet::new("1:*"), &items, TIMEOUT)
         .await
         .map_err(|e| format!("读取邮件列表失败: {e}"))?;
-    let list: Vec<ImapMailMeta> = fetched.iter().map(fetch_to_meta).collect();
+    let mut list: Vec<ImapMailMeta> = fetched.iter().map(fetch_to_meta).collect();
+    // 按 UID 倒序（UID 单调递增，近似时间顺序），只保留最近的 MAX_LIST 封。
+    list.sort_by(|a, b| b.id.cmp(&a.id));
+    list.truncate(MAX_LIST);
     let _ = conn.logout().await;
     Ok(list)
 }
@@ -226,9 +435,11 @@ pub async fn netease_fetch_email(
         FetchAttr::Flags,
         FetchAttr::Envelope,
         FetchAttr::InternalDate,
+        // 拉取完整邮件（含 MIME 头），以便 decode_mime_body 识别传输编码 / 字符集 / boundary。
+        // 用 BODY.PEEK 避免 FETCH 本身置为已读。
         FetchAttr::BodySection {
             peek: true,
-            section: Some("TEXT".to_string()),
+            section: None,
             partial: None,
         },
     ];
@@ -252,6 +463,7 @@ pub async fn netease_fetch_email(
         .flatten()
         .copied()
         .collect();
+    let (body, html) = decode_mime_body(&body_bytes);
     let detail = ImapMailDetail {
         id: f.uid.unwrap_or(uid),
         subject: if subject.is_empty() {
@@ -261,7 +473,8 @@ pub async fn netease_fetch_email(
         },
         sender,
         unread: flags_unread(f.flags.as_deref().unwrap_or(&[])),
-        body: String::from_utf8_lossy(&body_bytes).to_string(),
+        body,
+        html,
         date: f
             .internal_date
             .as_deref()

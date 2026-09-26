@@ -27,6 +27,8 @@ type Mail = {
 
 const mails: Mail[] = [];
 
+type NeteaseMeta = { id: number; subject: string; sender: string; date: string; unread: boolean; body?: string; html?: boolean };
+
 const EMPTY_MAIL: Mail = {
   id: 0, sender: "", address: "",
   subject: "没有更多邮件", preview: "",
@@ -183,12 +185,31 @@ function App() {
     return { ...normalized, body, html: mail.html, otp, tag: otp ? "验证码" : "实时", color: "#f38020", provider: "cloudflare" } as Mail;
   };
 
-  const toNeteaseMail = (m: { id: number; subject: string; sender: string; date: string; unread: boolean; body?: string }): Mail => ({
-    id: m.id, sender: m.sender || "未知发件人", address: "", subject: m.subject || "无主题",
-    preview: m.body ? m.body.replace(/\s+/g, " ").slice(0, 100) : "",
-    time: m.date ? m.date.replace("T", " ").slice(5, 16) : "",
-    unread: m.unread, body: m.body, provider: "163", color: "#d62828", tag: "163",
-  });
+  const toNeteaseMail = (m: NeteaseMeta): Mail => {
+    const addr = /<([^>]+)>/.exec(m.sender)?.[1] ?? (m.sender.includes("@") ? m.sender : "");
+    const display = (m.sender || "未知发件人").replace(/<[^>]+>$/, "").trim() || "未知发件人";
+    const body = m.body ?? "";
+    const otp = findOtpCandidates(`${m.subject || ""}\n${body}`)[0]?.value;
+    return {
+      id: m.id, sender: display, address: addr, subject: m.subject || "无主题",
+      preview: body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 100),
+      time: m.date ? m.date.replace("T", " ").slice(5, 16) : "",
+      unread: m.unread, body, html: m.html ? body : undefined, provider: "163", color: "#d62828",
+      tag: otp ? "验证码" : "163", otp,
+    };
+  };
+
+  /** 163 邮件正文安全渲染：只保留安全标签并移除脚本/事件，防止来自邮件的注入。 */
+  const renderMailHtml = (raw: string): string => {
+    const doc = new DOMParser().parseFromString(raw, "text/html");
+    doc.querySelectorAll("script, style, iframe, object, embed, link, meta, form, svg, video, audio").forEach((el) => el.remove());
+    doc.querySelectorAll("[onclick],[onerror],[onload],[href^='javascript:']").forEach((el) => {
+      Array.from(el.attributes).forEach((a) => { if (/^on/i.test(a.name) || a.name === "href") el.removeAttribute(a.name); });
+    });
+    // 图片若无真实 src 则移除，避免加载本地资源或追踪像素。
+    doc.querySelectorAll("img").forEach((el) => { if (!el.getAttribute("src")) el.remove(); });
+    return doc.body.innerHTML;
+  };
 
   const connectNetease = async (providedEmail?: string, providedCode?: string) => {
     const email = (providedEmail ?? neteaseEmail).trim();
@@ -196,7 +217,7 @@ function App() {
     if (!email || !code) { setActionStatus("请输入 163 邮箱和授权码"); return; }
     setActionStatus("连接 163…"); setLoading(true);
     try {
-      const metas = await invoke<Array<{ id: number; subject: string; sender: string; date: string; unread: boolean }>>(
+      const metas = await invoke<NeteaseMeta[]>(
         "netease_list_emails", { email, code });
       await invoke("save_secret", { account: "netease-credential", secret: `${email}\n${code}` });
       setNeteaseMails(metas.map(toNeteaseMail));
@@ -213,7 +234,7 @@ function App() {
       if (!neteaseEmail.trim() || !neteaseCode.trim()) { setShowSettings(true); return; }
       setLoading(true); setActionStatus("");
       try {
-        const metas = await invoke<Array<{ id: number; subject: string; sender: string; date: string; unread: boolean }>>("netease_list_emails", { email: neteaseEmail.trim(), code: neteaseCode.trim() });
+        const metas = await invoke<NeteaseMeta[]>("netease_list_emails", { email: neteaseEmail.trim(), code: neteaseCode.trim() });
         setNeteaseMails(metas.map(toNeteaseMail));
         setActionStatus(`已更新 163 邮箱 ${metas.length} 封邮件`);
       } catch (error) { setActionStatus(error instanceof Error ? error.message : "163 刷新失败"); }
@@ -237,7 +258,7 @@ function App() {
     if (!neteaseEmail.trim() || !neteaseCode.trim()) { setActionStatus("请先连接 163 邮箱"); return; }
     setLoading(true);
     try {
-      const result = await invoke<Array<{ id: number; subject: string; sender: string; date: string; unread: boolean }>>("netease_search_emails", { email: neteaseEmail.trim(), code: neteaseCode.trim(), query });
+      const result = await invoke<NeteaseMeta[]>("netease_search_emails", { email: neteaseEmail.trim(), code: neteaseCode.trim(), query });
       setNeteaseMails(result.map(toNeteaseMail));
       setActionStatus(result.length ? `网易邮箱找到 ${result.length} 封邮件` : "网易邮箱没有找到匹配邮件");
     } catch (error) { setActionStatus(error instanceof Error ? error.message : "网易邮箱搜索失败"); }
@@ -302,8 +323,7 @@ function App() {
     if (mail.provider === "163") {
       if (mail.body) return;
       try {
-        const detail = await invoke<{ id: number; subject: string; sender: string; date: string; unread: boolean; body: string }>(
-          "netease_fetch_email", { email: neteaseEmail.trim(), code: neteaseCode.trim(), uid: mail.id });
+        const detail = await invoke<NeteaseMeta>("netease_fetch_email", { email: neteaseEmail.trim(), code: neteaseCode.trim(), uid: mail.id });
         const detailedMail = toNeteaseMail(detail);
         detailCache.current.set(mail.id, detailedMail);
         if (detailCache.current.size > 30) detailCache.current.delete(detailCache.current.keys().next().value as number);
@@ -553,7 +573,7 @@ function App() {
           <div className="reading-toolbar"><div className="toolbar-left"><button className="mobile-close" onClick={() => setMobileDetailOpen(false)} title="返回列表">×</button><button onClick={() => moveSelection(-1)} title="上一封">←</button><button onClick={() => moveSelection(1)} title="下一封">↗</button><button onClick={deleteActiveMail} title="删除">⌫</button><button onClick={markActiveUnread} title="标记未读">✉</button></div><div className="toolbar-right"><button onClick={toggleStar} title="星标">{starredIds.has(activeMail.id) ? "★" : "☆"}</button><button onClick={() => setActionStatus("更多操作：可使用删除、星标或标记未读")} title="更多操作">⋯</button></div></div>
           <article className="message"><div className="message-heading"><div className="sender-avatar large" style={{ background: activeMail.color }}>{activeMail.sender.slice(0, 1)}</div><div><h2>{activeMail.subject}</h2><div className="from-line"><strong>{activeMail.sender}</strong><span>&lt;{activeMail.address}&gt;</span><time>{activeMail.time}</time></div></div></div>
             {activeMail.otp && <div className="otp-card"><div className="otp-icon">◇</div><div className="otp-content"><small>检测到验证码</small><strong>{activeMail.otp}</strong><span>仅在此设备本地解析，不会上传邮件内容</span></div><button onClick={copyOtp}>{copied ? "已复制" : "复制"}</button></div>}
-            <div className="message-body">{activeMail.body ? <><p>{activeMail.body}</p>{activeMail.attachments && activeMail.attachments.length > 0 && <p className="muted">附件：{activeMail.attachments.length} 个</p>}</> : <><p>{activeProvider === "163" ? (neteaseMails ? "点击邮件加载 163 信箱真实正文。" : "163 邮箱尚未连接，请在设置中填写邮箱和授权码。") : (client ? "点击邮件加载真实正文。" : "临时邮箱尚未连接，请在设置中连接邮箱或创建临时邮箱地址。")}</p><p className="muted">邮件正文按需加载，减少启动时间和网络流量。</p></>}</div>
+            <div className="message-body">{activeMail.html ? <div className="html-body" dangerouslySetInnerHTML={{ __html: renderMailHtml(activeMail.html) }} /> : activeMail.body ? <><p>{activeMail.body}</p>{activeMail.attachments && activeMail.attachments.length > 0 && <p className="muted">附件：{activeMail.attachments.length} 个</p>}</> : <><p>{activeProvider === "163" ? (neteaseMails ? "点击邮件加载 163 信箱真实正文。" : "163 邮箱尚未连接，请在设置中填写邮箱和授权码。") : (client ? "点击邮件加载真实正文。" : "临时邮箱尚未连接，请在设置中连接邮箱或创建临时邮箱地址。")}</p><p className="muted">邮件正文按需加载，减少启动时间和网络流量。</p></>}</div>
             <div className="ai-actions"><button className="ai-button" onClick={analyzeActiveMail} disabled={aiLoading}>{aiLoading ? "AI 分析中…" : "✦ AI 分析邮件"}</button><span>可使用本地 Qwen、智谱 GLM 或其他 OpenAI 兼容服务</span></div>{aiSections.length > 0 && <div className="ai-result"><strong>AI 分析</strong><div className="ai-sections">{aiSections.map((section) => <div className={`ai-section${section.kind === "tag" ? " ai-tag" : ""}`} key={section.title}><b>{section.title}</b><p className="ai-tag-p">{section.content}</p></div>)}</div></div>}
           </article>
         </section>
