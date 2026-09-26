@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { CloudflareClient, normalizeCloudflareMail, type ParsedMail } from "./api/cloudflare";
 import { findOtpCandidates } from "./api/otp";
 import { LocalAiClient } from "./api/local-ai";
-import { MAIL_ANALYSIS_SYSTEM_PROMPT, buildMailAnalysisPrompt } from "./api/ai-prompts";
+import { MAIL_ANALYSIS_SYSTEM_PROMPT, buildMailAnalysisPrompt, parseMailAnalysis, type MailAnalysis } from "./api/ai-prompts";
 import { CloudSyncClient } from "./api/cloud-sync";
 import "./App.css";
 
@@ -69,6 +69,8 @@ function App() {
   const [syncBaseUrl, setSyncBaseUrl] = useState(() => sessionStorage.getItem("cloudmail-sync-base") || "");
   const [syncToken, setSyncToken] = useState(() => sessionStorage.getItem("cloudmail-sync-token") || "");
   const [syncLoading, setSyncLoading] = useState(false);
+  const [tempLoginEmail, setTempLoginEmail] = useState("");
+  const [tempLoginPwd, setTempLoginPwd] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
   const detailCache = useRef(new Map<number, Mail>());
   const [neteaseEmail, setNeteaseEmail] = useState("");
@@ -89,8 +91,8 @@ function App() {
     else setActionStatus(`${label}功能正在接入，当前按钮已响应`);
   };
 
-  const sourceMails = activeProvider === "163" ? (neteaseMails ?? []) : (remoteMails ?? mails);
-  const activeMail = sourceMails.find((mail) => mail.id === selected) ?? sourceMails[0] ?? EMPTY_MAIL;
+  const sourceMails = useMemo(() => activeProvider === "163" ? (neteaseMails ?? []) : (remoteMails ?? mails), [activeProvider, neteaseMails, remoteMails]);
+  const activeMail = useMemo(() => sourceMails.find((mail) => mail.id === selected) ?? sourceMails[0] ?? EMPTY_MAIL, [sourceMails, selected]);
   const visibleMails = useMemo(() => sourceMails.filter((mail) => {
     const text = `${mail.sender} ${mail.address} ${mail.subject} ${mail.preview}`.toLowerCase();
     const matchesFolder = folder !== "已加星标" || starredIds.has(mail.id);
@@ -103,10 +105,22 @@ function App() {
 
   const aiSections = useMemo(() => {
     if (!aiAnalysis) return [];
-    return aiAnalysis.split(/(?=【(?:摘要|验证码|关键链接|风险等级|风险依据|建议|置信度)】)/g).map((part) => {
-      const match = part.match(/^【([^】]+)】\s*([\s\S]*)$/);
-      return match ? { title: match[1], content: match[2].trim() } : { title: "分析结果", content: part.trim() };
-    }).filter((part) => part.content);
+    let parsed: MailAnalysis | null = null;
+    try { parsed = parseMailAnalysis(aiAnalysis); } catch { parsed = null; }
+    if (!parsed) {
+      // 结构化解析失败时，把原文按段落展示，避免丢失信息。
+      return [{ title: "分析结果", content: aiAnalysis }];
+    }
+    const sections: { title: string; content: string; kind?: "tag" | "list" }[] = [
+      { title: "摘要", content: parsed.summary },
+      { title: "验证码", content: parsed.verification.found ? `${parsed.verification.code}（位置：${parsed.verification.location || "未指明"}）` : "未发现", kind: "tag" },
+    ];
+    if (parsed.links.length) sections.push({ title: "关键链接", content: parsed.links.map((l) => `${l.text}${l.domain ? ` → ${l.domain}` : ""}`).join("\n") });
+    sections.push({ title: "风险等级", content: parsed.risk, kind: "tag" });
+    if (parsed.evidence.length) sections.push({ title: "风险依据", content: parsed.evidence.join("\n") });
+    if (parsed.advice.length) sections.push({ title: "建议", content: parsed.advice.join("\n") });
+    sections.push({ title: "置信度", content: `${parsed.confidence}${parsed.uncertainty ? ` · ${parsed.uncertainty}` : ""}` });
+    return sections;
   }, [aiAnalysis]);
 
   useEffect(() => {
@@ -384,6 +398,62 @@ function App() {
     window.setTimeout(() => setCopied(false), 1600);
   };
 
+  // 验证码自动复制：邮件带 OTP 时直接写入剪贴板，避免手动复制。
+  const autoCopyOtp = async (mail: Mail) => {
+    if (!mail.otp) return;
+    const code = mail.otp.replace(/ /g, "");
+    await navigator.clipboard?.writeText(code).catch(() => undefined);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1600);
+    setActionStatus(`验证码 ${code} 已自动复制`);
+  };
+
+  // 临时邮箱自动刷新：每 20s 拉取新邮件，收到带验证码的新邮件立即自动复制到剪贴板。
+  useEffect(() => {
+    if (!client || activeProvider !== "cloudflare") return;
+    const id = window.setInterval(async () => {
+      try {
+        const result = await client.listParsedMails(1, 20);
+        const next = result.results.map(toMail);
+        setRemoteMails((current) => {
+          const fresh = next.find((m) => m.otp && !(current?.some((c) => c.id === m.id && c.otp)));
+          if (fresh) void autoCopyOtp(fresh);
+          return next;
+        });
+        setMailTotal(result.count);
+        setMailPage(1);
+      } catch { /* 静默：网络抖动不打断用户 */ }
+    }, 20_000);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client, activeProvider]);
+
+  // 登录已有临时邮箱地址（邮箱 + 密码，密码按 SHA-256 哈希后交给 API）。
+  const sha256Hex = async (s: string) => {
+    const data = new TextEncoder().encode(s);
+    const buf = await crypto.subtle.digest("SHA-256", data);
+    return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  };
+  const loginTempMail = async () => {
+    if (!tempLoginEmail.trim() || !tempLoginPwd) { setActionStatus("请输入临时邮箱和密码"); return; }
+    setActionStatus("登录临时邮箱…"); setLoading(true);
+    try {
+      const apiClient = new CloudflareClient(apiBase);
+      const passwordHash = await sha256Hex(tempLoginPwd);
+      const settings = await apiClient.passwordLogin(tempLoginEmail.trim(), passwordHash);
+      const jwt = apiClient.getToken();
+      await invoke("save_secret", { account: "cloudflare-credential", secret: jwt });
+      const result = await apiClient.listParsedMails(1, 20);
+      setClient(apiClient);
+      setRemoteMails(result.results.map(toMail));
+      setMailTotal(result.count); setMailPage(1);
+      if (settings.address) setCloudAddress(settings.address);
+      setApiStatus(`已登录 · ${settings.address || tempLoginEmail.trim()}`);
+      setShowSettings(false);
+    } catch (error) { setActionStatus(error instanceof Error ? error.message : "登录临时邮箱失败"); }
+    finally { setLoading(false); }
+  };
+
   const analyzeActiveMail = async () => {
     if (!activeMail) return;
     setAiLoading(true);
@@ -392,7 +462,7 @@ function App() {
       const result = await new LocalAiClient({ baseUrl: aiBaseUrl, model: aiModel, apiKey: aiApiKey }).chat([
         { role: "system", content: MAIL_ANALYSIS_SYSTEM_PROMPT },
         { role: "user", content: buildMailAnalysisPrompt({ sender: activeMail.sender, address: activeMail.address, subject: activeMail.subject, time: activeMail.time, body: activeMail.body || activeMail.preview, otp: activeMail.otp }) },
-      ], { temperature: 0.1, maxTokens: 600 });
+      ], { temperature: 0.1, maxTokens: 600, json: true });
       setAiAnalysis(result);
       setActionStatus("本地 AI 分析完成");
     } catch (error) {
@@ -484,12 +554,12 @@ function App() {
           <article className="message"><div className="message-heading"><div className="sender-avatar large" style={{ background: activeMail.color }}>{activeMail.sender.slice(0, 1)}</div><div><h2>{activeMail.subject}</h2><div className="from-line"><strong>{activeMail.sender}</strong><span>&lt;{activeMail.address}&gt;</span><time>{activeMail.time}</time></div></div></div>
             {activeMail.otp && <div className="otp-card"><div className="otp-icon">◇</div><div className="otp-content"><small>检测到验证码</small><strong>{activeMail.otp}</strong><span>仅在此设备本地解析，不会上传邮件内容</span></div><button onClick={copyOtp}>{copied ? "已复制" : "复制"}</button></div>}
             <div className="message-body">{activeMail.body ? <><p>{activeMail.body}</p>{activeMail.attachments && activeMail.attachments.length > 0 && <p className="muted">附件：{activeMail.attachments.length} 个</p>}</> : <><p>{activeProvider === "163" ? (neteaseMails ? "点击邮件加载 163 信箱真实正文。" : "163 邮箱尚未连接，请在设置中填写邮箱和授权码。") : (client ? "点击邮件加载真实正文。" : "临时邮箱尚未连接，请在设置中连接邮箱或创建临时邮箱地址。")}</p><p className="muted">邮件正文按需加载，减少启动时间和网络流量。</p></>}</div>
-            <div className="ai-actions"><button className="ai-button" onClick={analyzeActiveMail} disabled={aiLoading}>{aiLoading ? "AI 分析中…" : "✦ AI 分析邮件"}</button><span>可使用本地 Qwen、智谱 GLM 或其他 OpenAI 兼容服务</span></div>{aiSections.length > 0 && <div className="ai-result"><strong>AI 分析</strong><div className="ai-sections">{aiSections.map((section) => <div className="ai-section" key={section.title}><b>{section.title}</b><p>{section.content}</p></div>)}</div></div>}
+            <div className="ai-actions"><button className="ai-button" onClick={analyzeActiveMail} disabled={aiLoading}>{aiLoading ? "AI 分析中…" : "✦ AI 分析邮件"}</button><span>可使用本地 Qwen、智谱 GLM 或其他 OpenAI 兼容服务</span></div>{aiSections.length > 0 && <div className="ai-result"><strong>AI 分析</strong><div className="ai-sections">{aiSections.map((section) => <div className={`ai-section${section.kind === "tag" ? " ai-tag" : ""}`} key={section.title}><b>{section.title}</b><p className="ai-tag-p">{section.content}</p></div>)}</div></div>}
           </article>
         </section>
       </div>
       {actionStatus && <div className="status-toast" role="status">{actionStatus}<button onClick={() => setActionStatus("")}>×</button></div>}
-      {showSettings && <div className="modal-backdrop" onClick={() => setShowSettings(false)}><div className="modal" onClick={(e) => e.stopPropagation()}><div className="modal-header"><div><p className="eyebrow">设置</p><h2>账户与同步</h2></div><button onClick={() => setShowSettings(false)}>×</button></div><label>邮箱账户</label><div className="settings-account"><span className={`status-dot ${client ? "orange" : "red"}`} /><div><strong>{cloudAddress}</strong><small>{apiStatus}</small></div><span className="connected">{client ? "已连接" : "未连接"}</span></div><div className="ai-settings"><div className="settings-section-title">AI 邮件分析</div><div className="ai-presets"><button className="outline-button" onClick={() => applyAiPreset("local")}>本地 Qwen</button><button className="outline-button" onClick={() => applyAiPreset("zhipu")}>智谱 GLM</button><button className="outline-button" onClick={() => applyAiPreset("openai")}>OpenAI</button></div><label>OpenAI 兼容接口地址</label><input className="settings-input" value={aiBaseUrl} onChange={(e) => setAiBaseUrl(e.target.value)} placeholder="http://localhost:8000/v1" /><label>模型名称</label><input className="settings-input" value={aiModel} onChange={(e) => setAiModel(e.target.value)} placeholder="Qwen3.5-9B-AWQ / glm-4-flash" /><label>API Key（云端需要，本地可留空）</label><input className="settings-input" type="password" value={aiApiKey} onChange={(e) => setAiApiKey(e.target.value)} placeholder="sk-… 或智谱 API Key" /><div className="ai-setting-actions"><button className="outline-button ai-save" onClick={saveAiSettings}>保存设置</button><button className="outline-button ai-save" onClick={testAiConnection} disabled={aiLoading}>{aiLoading ? "测试中…" : "测试连接"}</button></div><small className="settings-note ai-note">兼容 OpenAI Chat Completions 格式。云端 Key 通过 Windows Credential Manager 保存，不写入源码；本地 Qwen 服务可留空。</small></div><div className="ai-settings sync-settings"><div className="settings-section-title">Cloudflare 云同步（可选）</div><label>同步 Worker 地址</label><input className="settings-input" value={syncBaseUrl} onChange={(e) => setSyncBaseUrl(e.target.value)} placeholder="https://cloudmail-sync.example.workers.dev" /><label>同步令牌</label><input className="settings-input" type="password" value={syncToken} onChange={(e) => setSyncToken(e.target.value)} placeholder="只保存在本次浏览器会话" /><button className="outline-button ai-save" onClick={syncCloudState} disabled={syncLoading}>{syncLoading ? "同步中…" : "同步已读、星标和 AI 结果"}</button><small className="settings-note ai-note">默认不上传邮件正文、附件、JWT 或 163 授权码；仅同步邮件 ID、状态和当前邮件的结构化 AI 结果。</small></div><label>Cloudflare API 地址</label><input className="settings-input" value={apiBase} onChange={(e) => setApiBase(e.target.value)} placeholder="https://email.kodao.site" /><label>邮箱凭据 / JWT</label><input className="settings-input" type="password" value={credential} onChange={(e) => setCredential(e.target.value)} placeholder="凭据仅保存在 Windows Credential Manager" /><button className="compose-button connect-button" onClick={() => connectCloudflare()} disabled={loading}>{loading ? "连接中…" : "连接并同步收件箱"}</button><button className="outline-button ai-save" onClick={openCreateAddress} style={{ width: "100%" }}>＋ 创建临时邮箱地址</button><div className="ai-settings"><div className="settings-section-title">163 邮箱（IMAP/SMTP）</div><label>邮箱地址</label><input className="settings-input" value={neteaseEmail} onChange={(e) => setNeteaseEmail(e.target.value)} placeholder="you@163.com" /><label>客户端授权码</label><input className="settings-input" type="password" value={neteaseCode} onChange={(e) => setNeteaseCode(e.target.value)} placeholder="在 163 网页版「设置→客户端授权密码」获取" /><button className="compose-button connect-button" onClick={() => connectNetease()} disabled={loading}>{loading ? "连接中…" : "连接并同步 163"}</button><small className="settings-note ai-note">请先在 163 设置里开启 IMAP/SMTP 并生成授权码，使用授权码而不是网页登录密码。授权码仅保存在 Windows Credential Manager。</small></div><div className="settings-note">凭据通过 Tauri 存入 Windows Credential Manager，不会写入日志或同步到云端。</div></div></div>}
+      {showSettings && <div className="modal-backdrop" onClick={() => setShowSettings(false)}><div className="modal" onClick={(e) => e.stopPropagation()}><div className="modal-header"><div><p className="eyebrow">设置</p><h2>账户与同步</h2></div><button onClick={() => setShowSettings(false)}>×</button></div><label>邮箱账户</label><div className="settings-account"><span className={`status-dot ${client ? "orange" : "red"}`} /><div><strong>{cloudAddress}</strong><small>{apiStatus}</small></div><span className="connected">{client ? "已连接" : "未连接"}</span></div><div className="ai-settings"><div className="settings-section-title">AI 邮件分析</div><div className="ai-presets"><button className="outline-button" onClick={() => applyAiPreset("local")}>本地 Qwen</button><button className="outline-button" onClick={() => applyAiPreset("zhipu")}>智谱 GLM</button><button className="outline-button" onClick={() => applyAiPreset("openai")}>OpenAI</button></div><label>OpenAI 兼容接口地址</label><input className="settings-input" value={aiBaseUrl} onChange={(e) => setAiBaseUrl(e.target.value)} placeholder="http://localhost:8000/v1" /><label>模型名称</label><input className="settings-input" value={aiModel} onChange={(e) => setAiModel(e.target.value)} placeholder="Qwen3.5-9B-AWQ / glm-4-flash" /><label>API Key（云端需要，本地可留空）</label><input className="settings-input" type="password" value={aiApiKey} onChange={(e) => setAiApiKey(e.target.value)} placeholder="sk-… 或智谱 API Key" /><div className="ai-setting-actions"><button className="outline-button ai-save" onClick={saveAiSettings}>保存设置</button><button className="outline-button ai-save" onClick={testAiConnection} disabled={aiLoading}>{aiLoading ? "测试中…" : "测试连接"}</button></div><small className="settings-note ai-note">兼容 OpenAI Chat Completions 格式。云端 Key 通过 Windows Credential Manager 保存，不写入源码；本地 Qwen 服务可留空。</small></div><div className="ai-settings sync-settings"><div className="settings-section-title">Cloudflare 云同步（可选）</div><label>同步 Worker 地址</label><input className="settings-input" value={syncBaseUrl} onChange={(e) => setSyncBaseUrl(e.target.value)} placeholder="https://cloudmail-sync.example.workers.dev" /><label>同步令牌</label><input className="settings-input" type="password" value={syncToken} onChange={(e) => setSyncToken(e.target.value)} placeholder="只保存在本次浏览器会话" /><button className="outline-button ai-save" onClick={syncCloudState} disabled={syncLoading}>{syncLoading ? "同步中…" : "同步已读、星标和 AI 结果"}</button><small className="settings-note ai-note">默认不上传邮件正文、附件、JWT 或 163 授权码；仅同步邮件 ID、状态和当前邮件的结构化 AI 结果。</small></div><label>Cloudflare API 地址</label><input className="settings-input" value={apiBase} onChange={(e) => setApiBase(e.target.value)} placeholder="https://email.kodao.site" /><label>邮箱凭据 / JWT</label><input className="settings-input" type="password" value={credential} onChange={(e) => setCredential(e.target.value)} placeholder="凭据仅保存在 Windows Credential Manager" /><button className="compose-button connect-button" onClick={() => connectCloudflare()} disabled={loading}>{loading ? "连接中…" : "连接并同步收件箱"}</button><button className="outline-button ai-save" onClick={openCreateAddress} style={{ width: "100%" }}>＋ 创建临时邮箱地址</button><div className="ai-settings sync-settings"><div className="settings-section-title">登录已有的临时邮箱</div><label>邮箱地址</label><input className="settings-input" value={tempLoginEmail} onChange={(e) => setTempLoginEmail(e.target.value)} placeholder="you@mail.kodao.site" /><label>密码</label><input className="settings-input" type="password" value={tempLoginPwd} onChange={(e) => setTempLoginPwd(e.target.value)} placeholder="创建该地址时返回的密码" /><button className="compose-button connect-button" onClick={loginTempMail} disabled={loading}>{loading ? "登录中…" : "登录并获取邮件"}</button><small className="settings-note ai-note">用邮件+密码登录已有临时邮箱，登录后自动切换并同步收件箱；密码按 SHA-256 哈希后传输，不落盘。</small></div><div className="ai-settings"><div className="settings-section-title">163 邮箱（IMAP/SMTP）</div><label>邮箱地址</label><input className="settings-input" value={neteaseEmail} onChange={(e) => setNeteaseEmail(e.target.value)} placeholder="you@163.com" /><label>客户端授权码</label><input className="settings-input" type="password" value={neteaseCode} onChange={(e) => setNeteaseCode(e.target.value)} placeholder="在 163 网页版「设置→客户端授权密码」获取" /><button className="compose-button connect-button" onClick={() => connectNetease()} disabled={loading}>{loading ? "连接中…" : "连接并同步 163"}</button><small className="settings-note ai-note">请先在 163 设置里开启 IMAP/SMTP 并生成授权码，使用授权码而不是网页登录密码。授权码仅保存在 Windows Credential Manager。</small></div><div className="settings-note">凭据通过 Tauri 存入 Windows Credential Manager，不会写入日志或同步到云端。</div></div></div>}
       {showCreate && <div className="modal-backdrop" onClick={() => setShowCreate(false)}><div className="modal" onClick={(e) => e.stopPropagation()}><div className="modal-header"><div><p className="eyebrow">临时邮箱</p><h2>创建临时邮箱地址</h2></div><button onClick={() => setShowCreate(false)}>×</button></div><label>用户名</label><input className="settings-input" value={tempName} onChange={(e) => setTempName(e.target.value.replace(/[^a-z0-9_.-]/gi, ""))} placeholder="自定义用户名（字母/数字）" /><label>域名</label>{availableDomains.length ? <select className="settings-input" value={tempDomain} onChange={(e) => setTempDomain(e.target.value)}>{availableDomains.map((d) => <option key={d} value={d}>{d}</option>)}</select> : <input className="settings-input" value={tempDomain} onChange={(e) => setTempDomain(e.target.value)} placeholder="mail.kodao.site" />}<div className="settings-note" style={{ minHeight: 24 }}>{tempName.trim() && tempDomain && <span>将创建：<strong>{tempName.trim()}@{tempDomain.replace(/^@/, "")}</strong></span>}</div><button className="compose-button connect-button" onClick={createTempMail} disabled={loading || !tempName.trim()}>{loading ? "创建中…" : "创建临时邮箱"}</button><small className="settings-note ai-note">创建后自动切换新地址并同步收件箱，JWT 会保存到 Windows Credential Manager。临时邮箱可用于接收验证码等一次性邮件。</small></div></div>}
       {showCompose && <div className="modal-backdrop" onClick={() => setShowCompose(false)}><div className="modal compose" onClick={(e) => e.stopPropagation()}><div className="modal-header"><div><p className="eyebrow">新邮件</p><h2>写邮件</h2></div><button onClick={() => setShowCompose(false)}>×</button></div><input value={composeTo} onChange={(e) => setComposeTo(e.target.value)} placeholder="收件人" /><input value={composeSubject} onChange={(e) => setComposeSubject(e.target.value)} placeholder="主题" /><textarea value={composeBody} onChange={(e) => setComposeBody(e.target.value)} placeholder="输入邮件内容…" rows={7} /><div className="compose-footer"><span>当前账户：{activeProvider === "163" ? (neteaseEmail.trim() || "163 邮箱") : cloudAddress}</span><button className="compose-button small" onClick={sendCompose}>发送</button></div></div></div>}
     </div>

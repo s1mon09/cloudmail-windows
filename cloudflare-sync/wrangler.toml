@@ -1,0 +1,23 @@
+# CloudMail 云同步 Worker 部署配置
+# 使用方法：
+#   1. 安装：npm i -g wrangler && wrangler login
+#   2. 创建数据库：wrangler d1 create cloudmail-sync
+#      (把上面命令输出的 database_id 填到下面的 id)
+#   3. 初始化表：wrangler d1 execute cloudmail-sync --remote --file=./schema.sql
+#   4. 设置令牌：wrangler secret put SYNC_TOKEN
+#   5. 部署：wrangler deploy
+
+name = "cloudmail-sync"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+
+# 可选：让客户端通过 https://cloudmail-sync.<你的自定义域> 访问
+# routes = [{ pattern = "sync.kodao.site/*", custom_domain = false }]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "cloudmail-sync"
+database_id = "465c9c72-d40b-4b1a-ae30-64e992e82af0"
+
+[observability]
+enabled = false
