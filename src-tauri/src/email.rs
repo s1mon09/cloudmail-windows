@@ -227,16 +227,10 @@ pub async fn netease_send_mail(
     content: String,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let from_addr = email
-            .parse::<lettre::Address>()
-            .map_err(|e| format!("发件地址无效: {e}"))?;
-        let to_addr = to
-            .trim()
-            .parse::<lettre::Address>()
-            .map_err(|e| format!("收件人地址无效: {e}"))?;
+        // 用字符串 parse 构建信封，Mailbox 类型交由编译器推断（无需手写路径）。
         let message = Message::builder()
-            .from(lettre::address::Mailbox::new(None, from_addr))
-            .to(lettre::address::Mailbox::new(None, to_addr))
+            .from(email.parse().map_err(|e: lettre::address::AddressError| format!("发件地址无效: {e}"))?)
+            .to(to.trim().parse().map_err(|e: lettre::address::AddressError| format!("收件人地址无效: {e}"))?)
             .subject(subject)
             .body(content)
             .map_err(|e| format!("构建邮件失败: {e}"))?;
