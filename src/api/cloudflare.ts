@@ -1,3 +1,5 @@
+import { toPlainText } from "./sanitize";
+
 export type CloudflareMail = {
   id: number | string;
   source?: string;
@@ -147,13 +149,15 @@ export class CloudflareClient {
 }
 
 export function normalizeCloudflareMail(mail: CloudflareMail) {
-  const source = mail.sender || mail.source || mail.originalSource || "未知发件人";
-  const address = source.match(/<([^>]+)>/)?.[1] || source;
-  const sender = source.replace(/<[^>]+>/, "").trim() || address;
+  const source = String(mail.sender || mail.source || mail.originalSource || "未知发件人");
+  const address = source.match(/<([^>]+)>/)?.[1] || (source.includes("@") ? source : "");
+  // 仅取出尖括号之前的显示名，并用 DOMParser 安全净化，避免标签剥录取代。
+  const senderName = source.split("<")[0].replace(/[<>]/g, "").trim();
+  const sender = toPlainText(senderName) || address || "未知发件人";
   return {
     id: Number(mail.id), sender, address,
     subject: String(mail.subject || "无主题"),
-    preview: String(mail.text || mail.message || "").replace(/<[^>]+>/g, "").slice(0, 100),
+    preview: toPlainText(mail.text || mail.message || "").slice(0, 100),
     time: mail.date ? new Date(mail.date).toLocaleString("zh-CN", { hour: "2-digit", minute: "2-digit" }) : "刚刚",
     unread: mail.is_unread === 1,
     color: "#64748b",

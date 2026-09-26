@@ -5,11 +5,14 @@ export type OtpCandidate = {
   context: string;
 };
 
+import { toPlainText } from "./sanitize";
+
 const CONTEXT = /(验证码|校验码|动态码|安全码|verification\s*code|security\s*code|one[- ]time password|otp)/i;
 const URL_RE = /https?:\/\/[^\s<>"']+/gi;
 
 export function stripHtml(value: string) {
-  return value.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  // 委托给基于 DOMParser 的安全净化，避免依赖单一正则剥离（CodeQL 告警）。
+  return toPlainText(value);
 }
 
 export function findOtpCandidates(raw: string): OtpCandidate[] {
